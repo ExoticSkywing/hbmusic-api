@@ -1,12 +1,11 @@
 # 🎵 HBMusic - 微信点歌插件后端服务
 
-基于 TuneHub API 的自部署点歌服务，支持网易云、QQ音乐、酷我三大平台。
+自部署的点歌服务，支持网易云、QQ音乐、酷我三大平台。
 
 ## ✨ 特性
 
 - **三平台聚合**：酷我 > 网易云 > QQ，自动换源
 - **VIP 可用**：部分平台付费歌曲也能解析
-- **完全隐藏**：所有请求通过你的服务器代理，不暴露 TuneHub
 - **Docker 部署**：一键启动，零配置
 
 ## 🚀 快速部署
@@ -67,22 +66,10 @@ GET /?name=晴天
   "code": 200,
   "title": "晴天",
   "singer": "周杰伦",
-  "cover": "https://music.yourdomain.com/cover?source=kuwo&id=xxx",
+  "cover": "https://music.yourdomain.com/cover?id=xxx",
   "link": "https://www.kuwo.cn/play_detail/xxx",
-  "music_url": "https://music.yourdomain.com/stream?source=kuwo&id=xxx"
+  "music_url": "https://music.yourdomain.com/stream?id=xxx"
 }
-```
-
-### 音频流代理
-
-```
-GET /stream?source=kuwo&id=xxx&br=320k
-```
-
-### 封面代理
-
-```
-GET /cover?source=kuwo&id=xxx
 ```
 
 ## ⚙️ 环境变量
@@ -93,7 +80,6 @@ GET /cover?source=kuwo&id=xxx
 | `BASE_URL` | - | **必填**，你的服务域名 |
 | `BITRATE` | 320k | 音质：128k / 320k / flac |
 | `SOURCE_PRIORITY` | kuwo,netease,qq | 音源优先级 |
-| `MAX_RETRIES` | 2 | 请求重试次数 |
 
 ## 📝 License
 
