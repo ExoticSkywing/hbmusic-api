@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  hbmusic:
+    build: .
+    container_name: hbmusic
+    restart: unless-stopped
+    ports:
+      - "18123:3000"
+    environment:
+      # 服务配置
+      - PORT=3000
+      - HOST=0.0.0.0
+      
+      # ⚠️ 重要：部署时必须修改为你的实际域名
+      - BASE_URL=https://hbmusic.1yo.cc
+      
+      # TuneHub API 地址（一般不需要修改）
+      - TUNEHUB_BASE=https://music-dl.sayqz.com/api
+      
+      # 音质: 128k / 320k / flac
+      - BITRATE=320k
+      
+      # 音源优先级（逗号分隔）
+      - SOURCE_PRIORITY=kuwo,netease,qq
+      
+      # 请求重试次数
+      - MAX_RETRIES=2
+      
+      # 日志级别: trace, debug, info, warn, error
+      - LOG_LEVEL=info
+    
+    # 资源限制（可选）
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

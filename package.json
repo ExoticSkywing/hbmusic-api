@@ -1,0 +1,21 @@
+{
+    "name": "hbmusic",
+    "version": "1.0.0",
+    "description": "微信点歌插件后端服务 - 基于 TuneHub API",
+    "type": "module",
+    "main": "src/index.js",
+    "scripts": {
+        "start": "node src/index.js",
+        "dev": "node --watch src/index.js"
+    },
+    "dependencies": {
+        "fastify": "^5.0.0",
+        "@fastify/cors": "^10.0.0",
+        "pino-pretty": "^11.0.0"
+    },
+    "engines": {
+        "node": ">=20.0.0"
+    },
+    "author": "",
+    "license": "MIT"
+}
