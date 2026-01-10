@@ -122,7 +122,7 @@ app.addHook('onRequest', async (request, reply) => {
         
         <div class="features">
             <div class="feature-item">
-                <span class="feature-icon">🚀</span>
+                <span class="feature-icon">🌐</span>
                 <span><b>全平台覆盖</b>：集成网易云、QQ、酷我等高品质音源</span>
             </div>
             <div class="feature-item">
@@ -130,12 +130,12 @@ app.addHook('onRequest', async (request, reply) => {
                 <span><b>无损音质</b>：支持最高 320k/FLAC 码率智能解析</span>
             </div>
             <div class="feature-item">
-                <span class="feature-icon">🔗</span>
-                <span><b>稳定可靠</b>：自动换源技术，告别版权下架烦恼</span>
+                <span class="feature-icon">⚡</span>
+                <span><b>快速响应</b>：0秒极速解析，让氛围燃爆全场</span>
             </div>
             <div class="feature-item">
-                <span class="feature-icon">💎</span>
-                <span style="color: #07C160; font-weight: bold;">支持付费音乐：解析各大平台收费音乐资源，畅享全网版权</span>
+                <span class="feature-icon">�</span>
+                <span style="color: #07C160; font-weight: bold;">尊享特权：100%支持发送会员及付费收费歌曲</span>
             </div>
         </div>
 
