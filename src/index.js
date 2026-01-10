@@ -134,8 +134,8 @@ app.addHook('onRequest', async (request, reply) => {
                 <span><b>稳定可靠</b>：自动换源技术，告别版权下架烦恼</span>
             </div>
             <div class="feature-item">
-                <span class="feature-icon">🛡️</span>
-                <span><b>安全加密</b>：链路完全加密，不暴露任何第三方敏感信息</span>
+                <span class="feature-icon">💎</span>
+                <span style="color: #07C160; font-weight: bold;">支持付费音乐：解析各大平台收费音乐资源，畅享全网版权</span>
             </div>
         </div>
 
@@ -144,7 +144,7 @@ app.addHook('onRequest', async (request, reply) => {
                 <div class="status-dot"></div>
                 服务在线 · 运行正常
             </div>
-            <p class="guide">※ 若点歌插件无响应，可刷新此页面关注最新状态。<br>此接口专为微信环境设计，不支持浏览器直接点歌。</p>
+            <p class="guide">※ 若点歌插件无响应，可刷新此页面关注最新状态。</p>
         </div>
     </div>
 </body>
