@@ -150,7 +150,7 @@ app.addHook('onRequest', async (request, reply) => {
 </body>
 </html>`;
 
-        return reply.code(403).type('text/html').send(html);
+        return reply.code(200).type('text/html').send(html);
     }
 
     // 其他客户端（如 CFNetwork/Calculator 等原生 HTTP 客户端）放行
