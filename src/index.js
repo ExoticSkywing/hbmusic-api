@@ -88,10 +88,69 @@ app.addHook('onRequest', async (request, reply) => {
 
     if (isBrowser) {
         request.log.warn({ ua: ua.substring(0, 100) }, '浏览器请求被拒绝');
-        return reply.code(403).send({
-            code: 403,
-            message: '此接口仅限微信客户端访问'
-        });
+
+        const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HBMusic | 服务状态</title>
+    <style>
+        :root { --wechat-green: #07C160; --bg-gray: #f2f2f2; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; background-color: var(--bg-gray); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; color: #333; }
+        .card { background: white; width: 90%; max-width: 400px; padding: 32px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); text-align: center; }
+        .logo { width: 64px; height: 64px; background: var(--wechat-green); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 32px; font-weight: bold; }
+        h1 { font-size: 24px; margin: 0 0 8px; font-weight: 600; }
+        .subtitle { color: #888; font-size: 14px; margin-bottom: 24px; }
+        .features { text-align: left; background: #f9f9f9; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+        .feature-item { display: flex; align-items: flex-start; margin-bottom: 12px; font-size: 14px; line-height: 1.6; }
+        .feature-item:last-child { margin-bottom: 0; }
+        .feature-icon { margin-right: 10px; font-size: 16px; }
+        .status-box { border-top: 1px solid #eee; pt: 20px; margin-top: 10px; }
+        .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; margin-bottom: 12px; }
+        .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
+        .guide { font-size: 12px; color: #b2b2b2; line-height: 1.5; }
+        @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">🎵</div>
+        <h1>HBMusic</h1>
+        <div class="subtitle">微信点歌插件专用后端服务</div>
+        
+        <div class="features">
+            <div class="feature-item">
+                <span class="feature-icon">🚀</span>
+                <span><b>全平台覆盖</b>：集成网易云、QQ、酷我等高品质音源</span>
+            </div>
+            <div class="feature-item">
+                <span class="feature-icon">🎧</span>
+                <span><b>无损音质</b>：支持最高 320k/FLAC 码率智能解析</span>
+            </div>
+            <div class="feature-item">
+                <span class="feature-icon">🔗</span>
+                <span><b>稳定可靠</b>：自动换源技术，告别版权下架烦恼</span>
+            </div>
+            <div class="feature-item">
+                <span class="feature-icon">🛡️</span>
+                <span><b>安全加密</b>：链路完全加密，不暴露任何第三方敏感信息</span>
+            </div>
+        </div>
+
+        <div class="status-box">
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                服务在线 · 运行正常
+            </div>
+            <p class="guide">※ 若点歌插件无响应，可刷新此页面关注最新状态。<br>此接口专为微信环境设计，不支持浏览器直接点歌。</p>
+        </div>
+    </div>
+</body>
+</html>`;
+
+        return reply.code(403).type('text/html').send(html);
     }
 
     // 其他客户端（如 CFNetwork/Calculator 等原生 HTTP 客户端）放行
