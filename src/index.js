@@ -145,7 +145,7 @@ app.addHook('onRequest', async (request, reply) => {
                 <span><b>快速响应</b>：0秒极速解析，让氛围燃爆全场</span>
             </div>
             <div class="feature-item">
-                <span class="feature-icon">�</span>
+                <span class="feature-icon">👑</span>
                 <span style="color: #07C160; font-weight: bold;">尊享特权：100%支持发送会员及付费收费歌曲</span>
             </div>
         </div>
@@ -155,7 +155,7 @@ app.addHook('onRequest', async (request, reply) => {
                 <div class="status-dot"></div>
                 服务在线 · 运行正常
             </div>
-            <p class="guide"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可刷新此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
+            <p class="guide"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可到浏览器访问此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
         </div>
     </div>
 </body>
