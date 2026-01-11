@@ -122,6 +122,22 @@ app.addHook('onRequest', async (request, reply) => {
             display: inline-block;
             text-align: left;
         }
+        .copy-btn { margin-top: 10px; background: var(--wechat-green); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; transition: opacity 0.2s; font-weight: 500; }
+        .copy-btn:active { opacity: 0.8; }
+        .url-box { margin-top: 15px; font-family: monospace; font-size: 13px; background: #f8f8f8; padding: 12px; border-radius: 8px; border: 1px solid #eee; word-break: break-all; color: var(--wechat-green); font-weight: 500; cursor: pointer; }
+        .url-box:hover { background: #f0f0f0; }
+        
+        /* 微信风格 Toast */
+        #toast { 
+            position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%); 
+            background: rgba(0, 0, 0, 0.7); color: white; padding: 20px; border-radius: 12px; 
+            text-align: center; display: none; z-index: 999; min-width: 120px;
+            animation: fadeIn 0.2s ease-out;
+        }
+        #toast .icon { font-size: 32px; display: block; margin-bottom: 8px; }
+        #toast .text { font-size: 14px; }
+        
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
     </style>
 </head>
@@ -155,9 +171,28 @@ app.addHook('onRequest', async (request, reply) => {
                 <div class="status-dot"></div>
                 服务在线 · 运行正常
             </div>
-            <p class="guide"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可到浏览器访问此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
+            <div class="url-box" id="apiUrl" onclick="copyUrl()">https://hbmusic.1yo.cc/?name=</div>
+            <button class="copy-btn" onclick="copyUrl()">一键复制地址</button>
+            <p class="guide" id="tip"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可到浏览器访问此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
         </div>
     </div>
+
+    <!-- Toast 弹窗 -->
+    <div id="toast">
+        <span class="icon">✔️</span>
+        <span class="text">已成功复制</span>
+    </div>
+
+    <script>
+        function copyUrl() {
+            const url = document.getElementById('apiUrl').innerText;
+            navigator.clipboard.writeText(url).then(() => {
+                const toast = document.getElementById('toast');
+                toast.style.display = 'block';
+                setTimeout(() => { toast.style.display = 'none'; }, 2000);
+            });
+        }
+    </script>
 </body>
 </html>`;
 
@@ -174,7 +209,8 @@ app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOStrin
 
 // 主接口：搜索歌曲
 app.get('/', async (request, reply) => {
-    const { name } = request.query;
+    // 增加对 'hame' 的容错处理，防止傻逼打错字
+    const name = request.query.name || request.query.hame;
 
     if (!name) {
         return reply.code(400).send({
