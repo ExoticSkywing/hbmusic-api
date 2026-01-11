@@ -110,7 +110,18 @@ app.addHook('onRequest', async (request, reply) => {
         .status-box { border-top: 1px solid #eee; pt: 20px; margin-top: 10px; }
         .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; margin-bottom: 12px; }
         .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
-        .guide { font-size: 12px; color: #b2b2b2; line-height: 1.5; }
+        .guide { 
+            font-size: 13px; 
+            color: #856404; 
+            line-height: 1.6; 
+            background: #fff3cd; 
+            border: 1px solid #ffeeba; 
+            padding: 12px; 
+            border-radius: 8px; 
+            margin-top: 15px;
+            display: inline-block;
+            text-align: left;
+        }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
     </style>
 </head>
@@ -144,7 +155,7 @@ app.addHook('onRequest', async (request, reply) => {
                 <div class="status-dot"></div>
                 服务在线 · 运行正常
             </div>
-            <p class="guide">※ 若点歌插件无响应，可刷新此页面关注最新状态。</p>
+            <p class="guide"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可刷新此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
         </div>
     </div>
 </body>
