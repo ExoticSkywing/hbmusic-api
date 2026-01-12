@@ -33,6 +33,27 @@ const app = Fastify({
 // 注册 CORS
 await app.register(cors, { origin: true });
 
+// ============= 安全防护 =============
+
+// 敏感路径前缀（扫描器常探测的路径）
+const SENSITIVE_PATHS = ['/api', '/admin', '/config', '/system', '/manage', '/backend', '/.env', '/.git', '/wp-'];
+
+// 敏感路径拦截钩子
+app.addHook('onRequest', async (request, reply) => {
+    const path = request.url.split('?')[0].toLowerCase();
+
+    // 检查是否命中敏感路径前缀
+    if (SENSITIVE_PATHS.some(prefix => path.startsWith(prefix))) {
+        request.log.warn({ path, ip: request.ip }, '敏感路径探测被拦截');
+        return reply.code(403).send('Forbidden');
+    }
+});
+
+// 统一 404 响应（不泄露技术栈信息）
+app.setNotFoundHandler((request, reply) => {
+    reply.code(404).send('Not Found');
+});
+
 // ============= 客户端验证 =============
 // 是否启用 UA 验证（默认启用）
 const UA_FILTER_ENABLED = process.env.UA_FILTER !== 'false';
