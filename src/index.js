@@ -118,13 +118,44 @@ app.addHook('onRequest', async (request, reply) => {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HBMusic | 服务状态</title>
     <style>
-        :root { --wechat-green: #07C160; --bg-gray: #f2f2f2; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; background-color: var(--bg-gray); display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; color: #333; }
-        .card { background: white; width: 90%; max-width: 400px; padding: 32px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); text-align: center; }
-        .logo { width: 64px; height: 64px; background: var(--wechat-green); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 32px; font-weight: bold; }
+        :root { --wechat-green: #07C160; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; 
+            background: linear-gradient(135deg, #e0f7e9 0%, #f0f4f8 50%, #e8f4f8 100%);
+            min-height: 100vh; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            color: #333;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* 动态波纹背景 */
+        .waves { position: absolute; bottom: 0; left: 0; width: 100%; height: 40vh; pointer-events: none; z-index: 0; }
+        .wave { position: absolute; bottom: 0; width: 200%; height: 100%; animation: wave 10s linear infinite; opacity: 0.6; }
+        .wave:nth-child(1) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.3' d='M0,160L48,176C96,192,192,224,288,213.3C384,203,480,149,576,138.7C672,128,768,160,864,181.3C960,203,1056,213,1152,192C1248,171,1344,117,1392,90.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 12s; }
+        .wave:nth-child(2) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.2' d='M0,64L48,80C96,96,192,128,288,128C384,128,480,96,576,106.7C672,117,768,171,864,181.3C960,192,1056,160,1152,133.3C1248,107,1344,85,1392,74.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 8s; animation-direction: reverse; }
+        .wave:nth-child(3) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.15' d='M0,224L48,213.3C96,203,192,181,288,181.3C384,181,480,203,576,218.7C672,235,768,245,864,234.7C960,224,1056,192,1152,165.3C1248,139,1344,117,1392,106.7L1440,96L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 15s; }
+        @keyframes wave { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+        
+        /* 毛玻璃卡片 */
+        .card { 
+            background: rgba(255, 255, 255, 0.85); 
+            backdrop-filter: blur(10px); 
+            -webkit-backdrop-filter: blur(10px);
+            width: 90%; max-width: 400px; padding: 32px; border-radius: 20px; 
+            box-shadow: 0 8px 32px rgba(7, 193, 96, 0.15), 0 2px 8px rgba(0,0,0,0.05); 
+            text-align: center; 
+            position: relative; 
+            z-index: 1;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+        .logo { width: 64px; height: 64px; background: var(--wechat-green); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 32px; font-weight: bold; box-shadow: 0 4px 15px rgba(7, 193, 96, 0.4); }
         h1 { font-size: 24px; margin: 0 0 8px; font-weight: 600; }
         .subtitle { color: #888; font-size: 14px; margin-bottom: 24px; }
-        .features { text-align: left; background: #f9f9f9; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+        .features { text-align: left; background: rgba(249, 249, 249, 0.8); padding: 16px; border-radius: 12px; margin-bottom: 24px; }
         .feature-item { display: flex; align-items: flex-start; margin-bottom: 12px; font-size: 14px; line-height: 1.6; }
         .feature-item:last-child { margin-bottom: 0; }
         .feature-icon { margin-right: 10px; font-size: 16px; }
@@ -183,6 +214,13 @@ app.addHook('onRequest', async (request, reply) => {
     </style>
 </head>
 <body>
+    <!-- 动态波纹 -->
+    <div class="waves">
+        <div class="wave"></div>
+        <div class="wave"></div>
+        <div class="wave"></div>
+    </div>
+    
     <div class="card">
         <div class="logo">🎵</div>
         <h1>HBMusic</h1>
