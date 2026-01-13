@@ -148,16 +148,36 @@ app.addHook('onRequest', async (request, reply) => {
         .url-box { margin-top: 15px; font-family: monospace; font-size: 13px; background: #f8f8f8; padding: 12px; border-radius: 8px; border: 1px solid #eee; word-break: break-all; color: var(--wechat-green); font-weight: 500; cursor: pointer; }
         .url-box:hover { background: #f0f0f0; }
         
-        /* 微信风格 Toast */
+        /* 复制成功 Toast - 趣味动画版 */
         #toast { 
-            position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%); 
-            background: rgba(0, 0, 0, 0.7); color: white; padding: 20px; border-radius: 12px; 
-            text-align: center; display: none; z-index: 999; min-width: 120px;
-            animation: fadeIn 0.2s ease-out;
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.8); 
+            background: white; color: #333; padding: 30px 40px; border-radius: 16px; 
+            text-align: center; display: none; z-index: 999;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
         }
-        #toast .icon { font-size: 32px; display: block; margin-bottom: 8px; }
-        #toast .text { font-size: 14px; }
+        #toast .checkmark {
+            width: 60px; height: 60px; border-radius: 50%; display: block; 
+            stroke-width: 3; stroke: white; stroke-miterlimit: 10; 
+            margin: 0 auto 15px; box-shadow: inset 0px 0px 0px var(--wechat-green);
+            animation: fill 0.4s ease-in-out 0.4s forwards, scale 0.3s ease-in-out 0.9s both;
+        }
+        #toast .checkmark-circle {
+            stroke-dasharray: 166; stroke-dashoffset: 166; stroke-width: 3; 
+            stroke-miterlimit: 10; stroke: var(--wechat-green); fill: none;
+            animation: stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+        }
+        #toast .checkmark-check {
+            transform-origin: 50% 50%; stroke-dasharray: 48; stroke-dashoffset: 48;
+            animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.8s forwards;
+        }
+        #toast .success-text { font-size: 16px; font-weight: 600; color: var(--wechat-green); }
+        #toast .sub-text { font-size: 12px; color: #999; margin-top: 5px; }
         
+        @keyframes popIn { to { transform: translate(-50%, -50%) scale(1); } }
+        @keyframes stroke { 100% { stroke-dashoffset: 0; } }
+        @keyframes scale { 0%, 100% { transform: none; } 50% { transform: scale3d(1.1, 1.1, 1); } }
+        @keyframes fill { 100% { box-shadow: inset 0px 0px 0px 30px var(--wechat-green); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
     </style>
@@ -198,10 +218,14 @@ app.addHook('onRequest', async (request, reply) => {
         </div>
     </div>
 
-    <!-- Toast 弹窗 -->
+    <!-- Toast 弹窗 - 趣味动画版 -->
     <div id="toast">
-        <span class="icon">✔️</span>
-        <span class="text">已成功复制</span>
+        <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+            <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
+            <path class="checkmark-check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8" stroke="white" stroke-width="3"/>
+        </svg>
+        <div class="success-text">复制成功 🎉</div>
+        <div class="sub-text">地址已复制到剪贴板</div>
     </div>
 
     <script>
