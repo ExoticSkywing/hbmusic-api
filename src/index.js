@@ -125,59 +125,64 @@ app.addHook('onRequest', async (request, reply) => {
             background: linear-gradient(135deg, #e0f7e9 0%, #f0f4f8 50%, #e8f4f8 100%);
             min-height: 100vh; 
             display: flex; 
+            flex-direction: column;
             align-items: center; 
-            justify-content: center; 
+            justify-content: flex-start;
+            padding: 40px 20px;
             color: #333;
             position: relative;
-            overflow: hidden;
+            /* 移除 overflow: hidden 以支持移动端滚动 */
+            -webkit-overflow-scrolling: touch;
         }
         
-        /* 动态波纹背景 */
-        .waves { position: absolute; bottom: 0; left: 0; width: 100%; height: 40vh; pointer-events: none; z-index: 0; }
+        /* 动态波纹背景 - 固定在视口底部 */
+        .waves { position: fixed; bottom: 0; left: 0; width: 100%; height: 40vh; pointer-events: none; z-index: 0; }
         .wave { position: absolute; bottom: 0; width: 200%; height: 100%; animation: wave 10s linear infinite; opacity: 0.6; }
         .wave:nth-child(1) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.3' d='M0,160L48,176C96,192,192,224,288,213.3C384,203,480,149,576,138.7C672,128,768,160,864,181.3C960,203,1056,213,1152,192C1248,171,1344,117,1392,90.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 12s; }
         .wave:nth-child(2) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.2' d='M0,64L48,80C96,96,192,128,288,128C384,128,480,96,576,106.7C672,117,768,171,864,181.3C960,192,1056,160,1152,133.3C1248,107,1344,85,1392,74.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 8s; animation-direction: reverse; }
         .wave:nth-child(3) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.15' d='M0,224L48,213.3C96,203,192,181,288,181.3C384,181,480,203,576,218.7C672,235,768,245,864,234.7C960,224,1056,192,1152,165.3C1248,139,1344,117,1392,106.7L1440,96L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 15s; }
         @keyframes wave { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
         
-        /* 毛玻璃卡片 */
+        /* 深度视觉统一内容区 */
         .card { 
-            background: rgba(255, 255, 255, 0.85); 
-            backdrop-filter: blur(10px); 
-            -webkit-backdrop-filter: blur(10px);
-            width: 90%; max-width: 400px; padding: 32px; border-radius: 20px; 
-            box-shadow: 0 8px 32px rgba(7, 193, 96, 0.15), 0 2px 8px rgba(0,0,0,0.05); 
+            background: rgba(255, 255, 255, 0.4); 
+            backdrop-filter: blur(15px); 
+            -webkit-backdrop-filter: blur(15px);
+            width: 100%; max-width: 400px; padding: 32px; border-radius: 28px; 
+            box-shadow: 0 15px 45px rgba(7, 193, 96, 0.1); 
             text-align: center; 
             position: relative; 
             z-index: 1;
-            border: 1px solid rgba(255,255,255,0.5);
+            border: 1px solid rgba(255,255,255,0.6);
+            margin-bottom: 20px;
         }
-        .logo { width: 64px; height: 64px; background: var(--wechat-green); border-radius: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 32px; font-weight: bold; box-shadow: 0 4px 15px rgba(7, 193, 96, 0.4); }
-        h1 { font-size: 24px; margin: 0 0 8px; font-weight: 600; }
-        .subtitle { color: #888; font-size: 14px; margin-bottom: 24px; }
-        .features { text-align: left; background: rgba(249, 249, 249, 0.8); padding: 16px; border-radius: 12px; margin-bottom: 24px; }
-        .feature-item { display: flex; align-items: flex-start; margin-bottom: 12px; font-size: 14px; line-height: 1.6; }
+        .logo { width: 72px; height: 72px; background: var(--wechat-green); border-radius: 20px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 36px; font-weight: bold; box-shadow: 0 8px 25px rgba(7, 193, 96, 0.3); }
+        h1 { font-size: 26px; margin: 0 0 8px; font-weight: 700; color: #1a1a1a; }
+        .subtitle { color: #666; font-size: 15px; margin-bottom: 24px; }
+        .features { text-align: left; background: rgba(255, 255, 255, 0.5); padding: 20px; border-radius: 16px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.4); }
+        .feature-item { display: flex; align-items: center; margin-bottom: 16px; font-size: 14px; line-height: 1.4; color: #333; }
         .feature-item:last-child { margin-bottom: 0; }
-        .feature-icon { margin-right: 10px; font-size: 16px; }
-        .status-box { border-top: 1px solid #eee; pt: 20px; margin-top: 10px; }
-        .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; margin-bottom: 12px; }
+        .feature-icon { margin-right: 12px; font-size: 18px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
+        .status-box { border-top: 1px solid rgba(0,0,0,0.05); pt: 24px; margin-top: 12px; }
+        .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid rgba(7, 193, 96, 0.15); }
         .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
         .guide { 
             font-size: 13px; 
-            color: #856404; 
+            color: #7d5a00; 
             line-height: 1.6; 
-            background: #fff3cd; 
-            border: 1px solid #ffeeba; 
-            padding: 12px; 
-            border-radius: 8px; 
+            background: rgba(255, 243, 205, 0.7); 
+            border: 1px solid rgba(255, 238, 186, 0.5); 
+            padding: 14px; 
+            border-radius: 14px; 
             margin-top: 15px;
-            display: inline-block;
+            display: block;
             text-align: left;
         }
-        .copy-btn { margin-top: 10px; background: var(--wechat-green); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; transition: opacity 0.2s; font-weight: 500; }
-        .copy-btn:active { opacity: 0.8; }
-        .url-box { margin-top: 15px; font-family: monospace; font-size: 13px; background: #f8f8f8; padding: 12px; border-radius: 8px; border: 1px solid #eee; word-break: break-all; color: var(--wechat-green); font-weight: 500; cursor: pointer; }
-        .url-box:hover { background: #f0f0f0; }
+        .copy-btn { margin-top: 12px; background: var(--wechat-green); color: white; border: none; padding: 12px 24px; border-radius: 12px; font-size: 14px; cursor: pointer; transition: all 0.3s; font-weight: 600; width: 100%; box-shadow: 0 4px 15px rgba(7, 193, 96, 0.2); }
+        .copy-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(7, 193, 96, 0.3); }
+        .copy-btn:active { transform: translateY(0); }
+        .url-box { margin-top: 18px; font-family: 'SF Mono', 'Roboto Mono', monospace; font-size: 12px; background: rgba(255, 255, 255, 0.6); padding: 14px; border-radius: 14px; border: 1px solid rgba(0,0,0,0.05); word-break: break-all; color: var(--wechat-green); font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .url-box:hover { background: rgba(255, 255, 255, 0.8); }
         
         /* 复制成功 Toast - 趣味动画版 */
         #toast { 
