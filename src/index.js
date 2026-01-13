@@ -124,19 +124,28 @@ app.addHook('onRequest', async (request, reply) => {
             font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; 
             background: linear-gradient(135deg, #e0f7e9 0%, #f0f4f8 50%, #e8f4f8 100%);
             min-height: 100vh; 
+            /* 使用 min-content 确保 body 高度能被卡片撑开 */
+            height: auto;
             display: flex; 
             flex-direction: column;
             align-items: center; 
             justify-content: flex-start;
-            padding: 40px 20px;
+            padding: 40px 20px 100px; /* 增加底部 padding 防止遮挡波纹 */
             color: #333;
             position: relative;
-            /* 移除 overflow: hidden 以支持移动端滚动 */
             -webkit-overflow-scrolling: touch;
         }
         
-        /* 动态波纹背景 - 固定在视口底部 */
-        .waves { position: fixed; bottom: 0; left: 0; width: 100%; height: 40vh; pointer-events: none; z-index: 0; }
+        /* 动态波纹背景 - 强制固定在视口最底部 */
+        .waves { 
+            position: fixed; 
+            bottom: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 25vh; /* 缩小高度，避免在移动端太突兀 */
+            pointer-events: none; 
+            z-index: 0; 
+        }
         .wave { position: absolute; bottom: 0; width: 200%; height: 100%; animation: wave 10s linear infinite; opacity: 0.6; }
         .wave:nth-child(1) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.3' d='M0,160L48,176C96,192,192,224,288,213.3C384,203,480,149,576,138.7C672,128,768,160,864,181.3C960,203,1056,213,1152,192C1248,171,1344,117,1392,90.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 12s; }
         .wave:nth-child(2) { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'%3E%3Cpath fill='%2307C160' fill-opacity='0.2' d='M0,64L48,80C96,96,192,128,288,128C384,128,480,96,576,106.7C672,117,768,171,864,181.3C960,192,1056,160,1152,133.3C1248,107,1344,85,1392,74.7L1440,64L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'%3E%3C/path%3E%3C/svg%3E") repeat-x; background-size: 50% 100%; animation-duration: 8s; animation-direction: reverse; }
