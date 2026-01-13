@@ -214,6 +214,9 @@ app.addHook('onRequest', async (request, reply) => {
             });
         }
     </script>
+
+    <!-- Chatway 客服组件 -->
+    <script id="chatway" async="true" src="https://cdn.chatway.app/widget.js?id=i5GVIcMxReNp"></script>
 </body>
 </html>`;
 
