@@ -136,6 +136,17 @@ app.addHook('onRequest', async (request, reply) => {
             -webkit-overflow-scrolling: touch;
         }
         
+        /* 背景流光 (Aurora Blobs) */
+        .blobs { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; filter: blur(80px); opacity: 0.5; }
+        .blob { position: absolute; width: 300px; height: 300px; border-radius: 50%; animation: blobFloat 20s infinite alternate-reverse; }
+        .blob-1 { background: rgba(7, 193, 96, 0.3); top: -50px; left: -50px; }
+        .blob-2 { background: rgba(0, 122, 255, 0.2); bottom: -50px; right: -50px; animation-duration: 25s; }
+        @keyframes blobFloat { 
+            0% { transform: translate(0, 0) rotate(0deg) scale(1); }
+            50% { transform: translate(100px, 50px) rotate(90deg) scale(1.1); }
+            100% { transform: translate(-50px, 150px) rotate(180deg) scale(0.9); }
+        }
+        
         /* 动态波纹背景 - 强制固定在视口最底部 */
         .waves { 
             position: fixed; 
@@ -158,23 +169,37 @@ app.addHook('onRequest', async (request, reply) => {
             backdrop-filter: blur(15px); 
             -webkit-backdrop-filter: blur(15px);
             width: 100%; max-width: 400px; padding: 32px; border-radius: 28px; 
-            box-shadow: 0 15px 45px rgba(7, 193, 96, 0.1); 
+            /* 内发光与外阴影结合 */
+            box-shadow: 
+                0 15px 45px rgba(7, 193, 96, 0.1),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.6); 
             text-align: center; 
             position: relative; 
-            z-index: 1;
-            border: 1px solid rgba(255,255,255,0.6);
+            z-index: 10;
+            border: 1px solid rgba(255,255,255,0.4);
             margin-bottom: 20px;
+            /* 进场动画 */
+            opacity: 0;
+            transform: translateY(30px) scale(0.95);
+            animation: cardPop 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) 0.2s forwards;
+        }
+        @keyframes cardPop {
+            to { opacity: 1; transform: translateY(0) scale(1); }
         }
         .logo { width: 72px; height: 72px; background: var(--wechat-green); border-radius: 20px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 36px; font-weight: bold; box-shadow: 0 8px 25px rgba(7, 193, 96, 0.3); }
         h1 { font-size: 26px; margin: 0 0 8px; font-weight: 700; color: #1a1a1a; }
         .subtitle { color: #666; font-size: 15px; margin-bottom: 24px; }
         .features { text-align: left; background: rgba(255, 255, 255, 0.5); padding: 20px; border-radius: 16px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.4); }
-        .feature-item { display: flex; align-items: center; margin-bottom: 16px; font-size: 14px; line-height: 1.4; color: #333; }
+        .feature-item { display: flex; align-items: center; margin-bottom: 16px; font-size: 14px; line-height: 1.4; color: #333; padding: 8px; border-radius: 12px; transition: all 0.2s; }
+        .feature-item:hover { background: rgba(7, 193, 96, 0.05); transform: translateX(5px); }
         .feature-item:last-child { margin-bottom: 0; }
-        .feature-icon { margin-right: 12px; font-size: 18px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); }
+        .feature-icon { margin-right: 12px; font-size: 18px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); transition: transform 0.2s; }
+        .feature-item:hover .feature-icon { transform: scale(1.2) rotate(10deg); }
         .status-box { border-top: 1px solid rgba(0,0,0,0.05); pt: 24px; margin-top: 12px; }
         .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid rgba(7, 193, 96, 0.15); }
-        .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
+        .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; position: relative; }
+        .status-dot::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: var(--wechat-green); border-radius: 50%; opacity: 0.4; animation: dotGlow 2s infinite; }
+        @keyframes dotGlow { 0% { transform: scale(1); opacity: 0.4; } 100% { transform: scale(2.5); opacity: 0; } }
         .guide { 
             font-size: 13px; 
             color: #7d5a00; 
@@ -228,6 +253,12 @@ app.addHook('onRequest', async (request, reply) => {
     </style>
 </head>
 <body>
+    <!-- 背景流光 -->
+    <div class="blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
     <!-- 动态波纹 -->
     <div class="waves">
         <div class="wave"></div>
