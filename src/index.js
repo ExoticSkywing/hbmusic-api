@@ -618,9 +618,6 @@ async function tryGetSongFromSource(keyword, source, log) {
     // 构建代理 URL（隐藏 TuneHub）
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
-    // 歌词直接使用上游地址（和封面同理，确保微信能正确获取）
-    const lyricUrl = info.lrc || `${baseUrl}/lyric?source=${source}&id=${songId}`;
-
     return {
         code: 200,
         title: info.name || song.name,
@@ -628,7 +625,7 @@ async function tryGetSongFromSource(keyword, source, log) {
         cover: coverUrl || `${baseUrl}/cover?source=${source}&id=${songId}`,
         link: getDetailPageLink(source, songId),
         music_url: `${baseUrl}/stream?source=${source}&id=${songId}&br=${CONFIG.BITRATE}`,
-        lyric: lyricUrl,
+        lyric: `${baseUrl}/lyric?source=${source}&id=${songId}`,
         source
     };
 }
