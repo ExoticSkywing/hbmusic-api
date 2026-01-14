@@ -29,6 +29,9 @@ services:
       
       # 日志级别: trace, debug, info, warn, error
       - LOG_LEVEL=info
+      
+      # 忽略 SSL 证书过期（下游 ToneHub 服务证书已过期）
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     
     # 资源限制（可选）
     deploy:

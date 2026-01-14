@@ -8,6 +8,9 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 
+// 解决下游 TuneHub 服务证书过期问题
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 // ============= 配置 =============
 const CONFIG = {
     PORT: parseInt(process.env.PORT || '3000'),
