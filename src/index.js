@@ -602,6 +602,19 @@ async function tryGetSongFromSource(keyword, source, log) {
 
     const info = infoData.data;
 
+    // Step 3: 获取封面真实直链（微信需要原始平台的直链才能正确显示封面）
+    let coverUrl = info.pic || '';
+    if (coverUrl) {
+        try {
+            const coverRes = await fetch(coverUrl, { redirect: 'manual' });
+            if (coverRes.status === 301 || coverRes.status === 302) {
+                coverUrl = coverRes.headers.get('location') || coverUrl;
+            }
+        } catch (e) {
+            log.warn({ error: e.message }, '获取封面直链失败，使用原始地址');
+        }
+    }
+
     // 构建代理 URL（隐藏 TuneHub）
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
@@ -609,7 +622,7 @@ async function tryGetSongFromSource(keyword, source, log) {
         code: 200,
         title: info.name || song.name,
         singer: info.artist || song.artist || '未知歌手',
-        cover: `${baseUrl}/cover?source=${source}&id=${songId}`,
+        cover: coverUrl || `${baseUrl}/cover?source=${source}&id=${songId}`,
         link: getDetailPageLink(source, songId),
         music_url: `${baseUrl}/stream?source=${source}&id=${songId}&br=${CONFIG.BITRATE}`,
         lyric: `${baseUrl}/lyric?source=${source}&id=${songId}`,
