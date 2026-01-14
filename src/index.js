@@ -115,6 +115,9 @@ async function checkServiceHealth() {
 
         if (res.ok) {
             cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: now };
+        } else if (res.status < 500) {
+            // 4xx 错误可能是探测参数问题，但服务本身是活的
+            cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: now };
         } else {
             app.log.warn({ code: res.status }, '上游服务响应异常');
             cachedHealthStatus = { status: 'degraded', text: '服务波动 · 正在修复', color: '#FF9500', lastCheck: now };
