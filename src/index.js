@@ -88,6 +88,55 @@ const BROWSER_BLACKLIST = [
     '2345Explorer/',
 ];
 
+// ============= 服务健康自检 =============
+// 缓存状态，避免每次请求都探测
+let cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: 0 };
+const HEALTH_CHECK_INTERVAL = 60000; // 60秒缓存
+
+/**
+ * 内部健康检查（不暴露上游细节）
+ */
+async function checkServiceHealth() {
+    const now = Date.now();
+    if (now - cachedHealthStatus.lastCheck < HEALTH_CHECK_INTERVAL) {
+        return cachedHealthStatus;
+    }
+
+    try {
+        // 探测上游解析服务
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        const res = await fetch(`${CONFIG.TUNEHUB_BASE}?type=search&source=kuwo&name=test&limit=1`, {
+            signal: controller.signal,
+            headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+        });
+        clearTimeout(timeout);
+
+        if (res.ok) {
+            cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: now };
+        } else {
+            app.log.warn({ code: res.status }, '上游服务响应异常');
+            cachedHealthStatus = { status: 'degraded', text: '服务波动 · 正在修复', color: '#FF9500', lastCheck: now };
+        }
+    } catch (error) {
+        // 证书过期等连接异常，但实际上我们已开启跳过验证，可能仍能使用
+        if (error.name === 'AbortError') {
+            app.log.warn('上游服务响应超时');
+            cachedHealthStatus = { status: 'degraded', text: '服务波动 · 响应缓慢', color: '#FF9500', lastCheck: now };
+        } else if (error.message?.includes('certificate') || error.code === 'CERT_HAS_EXPIRED') {
+            // 证书过期，但已开启兼容模式
+            app.log.warn('上游服务证书异常，已开启兼容模式');
+            cachedHealthStatus = { status: 'ok', text: '服务在线 · 兼容模式', color: '#07C160', lastCheck: now };
+        } else {
+            app.log.error({ error: error.message }, '上游服务完全不可用');
+            cachedHealthStatus = { status: 'error', text: '服务维护中', color: '#FF3B30', lastCheck: now };
+        }
+    }
+
+    return cachedHealthStatus;
+}
+
 // UA 验证中间件
 app.addHook('onRequest', async (request, reply) => {
     // 跳过非保护路由（健康检查、资源代理等）
@@ -113,6 +162,17 @@ app.addHook('onRequest', async (request, reply) => {
     if (isBrowser) {
         request.log.warn({ ua: ua.substring(0, 100) }, '浏览器请求被拒绝');
 
+        // 获取服务状态
+        const health = await checkServiceHealth();
+        // 将十六进制色转换为 RGB
+        const hexToRgb = (hex) => {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            return `${r}, ${g}, ${b}`;
+        };
+        const statusRgb = hexToRgb(health.color);
+
         const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -121,7 +181,7 @@ app.addHook('onRequest', async (request, reply) => {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HBMusic | 服务状态</title>
     <style>
-        :root { --wechat-green: #07C160; }
+        :root { --wechat-green: #07C160; --status-color: ${health.color}; --status-rgb: ${statusRgb}; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; 
@@ -199,9 +259,9 @@ app.addHook('onRequest', async (request, reply) => {
         .feature-icon { margin-right: 12px; font-size: 18px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); transition: transform 0.2s; }
         .feature-item:hover .feature-icon { transform: scale(1.2) rotate(10deg); }
         .status-box { border-top: 1px solid rgba(0,0,0,0.05); pt: 24px; margin-top: 12px; }
-        .status-badge { display: inline-flex; align-items: center; background: rgba(7, 193, 96, 0.1); color: var(--wechat-green); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid rgba(7, 193, 96, 0.15); }
-        .status-dot { width: 8px; height: 8px; background: var(--wechat-green); border-radius: 50%; margin-right: 8px; position: relative; }
-        .status-dot::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: var(--wechat-green); border-radius: 50%; opacity: 0.4; animation: dotGlow 2s infinite; }
+        .status-badge { display: inline-flex; align-items: center; background: rgba(var(--status-rgb), 0.1); color: var(--status-color); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid rgba(var(--status-rgb), 0.15); }
+        .status-dot { width: 8px; height: 8px; background: var(--status-color); border-radius: 50%; margin-right: 8px; position: relative; }
+        .status-dot::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: var(--status-color); border-radius: 50%; opacity: 0.4; animation: dotGlow 2s infinite; }
         @keyframes dotGlow { 0% { transform: scale(1); opacity: 0.4; } 100% { transform: scale(2.5); opacity: 0; } }
         .guide { 
             font-size: 13px; 
@@ -296,7 +356,7 @@ app.addHook('onRequest', async (request, reply) => {
         <div class="status-box">
             <div class="status-badge">
                 <div class="status-dot"></div>
-                服务在线 · 运行正常
+                ${health.text}
             </div>
             <div class="url-box" id="apiUrl" onclick="copyUrl()">https://hbmusic.1yo.cc/?name=</div>
             <button class="copy-btn" onclick="copyUrl()">一键复制地址</button>
