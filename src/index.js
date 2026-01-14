@@ -266,18 +266,30 @@ app.addHook('onRequest', async (request, reply) => {
         .status-dot { width: 8px; height: 8px; background: var(--status-color); border-radius: 50%; margin-right: 8px; position: relative; }
         .status-dot::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: var(--status-color); border-radius: 50%; opacity: 0.4; animation: dotGlow 2s infinite; }
         @keyframes dotGlow { 0% { transform: scale(1); opacity: 0.4; } 100% { transform: scale(2.5); opacity: 0; } }
-        .guide { 
-            font-size: 13px; 
-            color: #7d5a00; 
-            line-height: 1.6; 
-            background: rgba(255, 243, 205, 0.7); 
-            border: 1px solid rgba(255, 238, 186, 0.5); 
-            padding: 14px; 
-            border-radius: 14px; 
-            margin-top: 15px;
-            display: block;
-            text-align: left;
+        
+        /* 可折叠帮助卡片 */
+        .help-toggle { 
+            display: flex; align-items: center; justify-content: center;
+            margin-top: 16px; padding: 10px 16px; 
+            background: rgba(255, 255, 255, 0.5); border: 1px solid rgba(0,0,0,0.05); 
+            border-radius: 12px; cursor: pointer; transition: all 0.3s;
+            color: #666; font-size: 13px; font-weight: 500;
         }
+        .help-toggle:hover { background: rgba(255, 255, 255, 0.7); }
+        .help-toggle .icon { margin-right: 6px; transition: transform 0.3s; }
+        .help-toggle.active .icon { transform: rotate(180deg); }
+        .help-content {
+            max-height: 0; overflow: hidden; transition: max-height 0.4s ease-out, opacity 0.3s, margin 0.3s;
+            opacity: 0; margin-top: 0;
+            font-size: 13px; color: #666; line-height: 1.8; text-align: left;
+            background: rgba(255, 255, 255, 0.5); border-radius: 12px; padding: 0 14px;
+        }
+        .help-content.show {
+            max-height: 200px; opacity: 1; margin-top: 12px; padding: 14px;
+        }
+        .help-content p { margin: 0 0 8px; }
+        .help-content p:last-child { margin: 0; }
+        .help-content .highlight { color: var(--wechat-green); font-weight: 600; }
         .copy-btn { margin-top: 12px; background: var(--wechat-green); color: white; border: none; padding: 12px 24px; border-radius: 12px; font-size: 14px; cursor: pointer; transition: all 0.3s; font-weight: 600; width: 100%; box-shadow: 0 4px 15px rgba(7, 193, 96, 0.2); }
         .copy-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(7, 193, 96, 0.3); }
         .copy-btn:active { transform: translateY(0); }
@@ -363,7 +375,15 @@ app.addHook('onRequest', async (request, reply) => {
             </div>
             <div class="url-box" id="apiUrl" onclick="copyUrl()">https://hbmusic.1yo.cc/?name=</div>
             <button class="copy-btn" onclick="copyUrl()">一键复制地址</button>
-            <p class="guide" id="tip"><b>⚠️ 温馨提示</b><br>若点歌插件无响应，可到浏览器访问此页面关注服务最新状态。如果页面能正常显示，说明后端运行正常。</p>
+            
+            <div class="help-toggle" onclick="toggleHelp(this)">
+                <span class="icon">❓</span> 使用帮助
+            </div>
+            <div class="help-content" id="helpContent">
+                <p>💡 若点歌插件无响应，请先访问此页确认<span class="highlight">服务状态</span></p>
+                <p>✅ 页面能正常打开 = 后端运行正常</p>
+                <p>📦 如有问题请点击右下角客服咨询</p>
+            </div>
         </div>
     </div>
 
@@ -385,6 +405,12 @@ app.addHook('onRequest', async (request, reply) => {
                 toast.style.display = 'block';
                 setTimeout(() => { toast.style.display = 'none'; }, 2000);
             });
+        }
+        
+        function toggleHelp(el) {
+            el.classList.toggle('active');
+            const content = document.getElementById('helpContent');
+            content.classList.toggle('show');
         }
     </script>
 
