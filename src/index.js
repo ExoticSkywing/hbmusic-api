@@ -15,7 +15,9 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const CONFIG = {
     PORT: parseInt(process.env.PORT || '3000'),
     HOST: process.env.HOST || '0.0.0.0',
-    TUNEHUB_BASE: process.env.TUNEHUB_BASE || 'https://music-dl.sayqz.com/api',
+    // TuneHub V3 API
+    TUNEHUB_BASE: process.env.TUNEHUB_BASE || 'https://tunehub.sayqz.com/api',
+    TUNEHUB_API_KEY: process.env.TUNEHUB_API_KEY || '',
     BITRATE: process.env.BITRATE || '320k',
     MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '2'),
     // 音源优先级：酷我优先
@@ -107,9 +109,12 @@ async function checkServiceHealth() {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(`${CONFIG.TUNEHUB_BASE}?type=search&source=kuwo&name=test&limit=1`, {
+        const res = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/methods`, {
             signal: controller.signal,
-            headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+            headers: {
+                'User-Agent': 'HBMusic-HealthCheck/1.0',
+                'X-API-Key': CONFIG.TUNEHUB_API_KEY
+            }
         });
         clearTimeout(timeout);
 
@@ -454,7 +459,7 @@ app.get('/', async (request, reply) => {
     }
 });
 
-// 音频流代理（隐藏 TuneHub）
+// 音频流代理（使用 V3 API 解析）
 app.get('/stream', async (request, reply) => {
     const { source, id, br } = request.query;
 
@@ -463,18 +468,39 @@ app.get('/stream', async (request, reply) => {
     }
 
     const bitrate = br || CONFIG.BITRATE;
-    const targetUrl = `${CONFIG.TUNEHUB_BASE}?source=${source}&id=${id}&type=url&br=${bitrate}`;
 
     try {
-        // 第一步：获取重定向后的真实 URL
-        const redirectRes = await fetch(targetUrl, { redirect: 'manual' });
-        let finalUrl = targetUrl;
+        // 调用 V3 解析接口获取音频 URL（消耗积分）
+        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': CONFIG.TUNEHUB_API_KEY
+            },
+            body: JSON.stringify({
+                platform: source,
+                ids: String(id),
+                quality: bitrate
+            })
+        });
 
-        if (redirectRes.status === 301 || redirectRes.status === 302) {
-            finalUrl = redirectRes.headers.get('location') || targetUrl;
+        if (!parseRes.ok) {
+            return reply.code(502).send({ error: '解析失败' });
         }
 
-        // 第二步：请求真实音频并转发
+        const parseData = await parseRes.json();
+        // V3 API 返回嵌套结构
+        const songs = parseData.data?.data;
+        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
+            return reply.code(404).send({ error: '未找到音频' });
+        }
+
+        const audioUrl = songs[0].url;
+        if (!audioUrl) {
+            return reply.code(404).send({ error: '音频链接不可用' });
+        }
+
+        // 请求真实音频并转发
         const headers = {};
         if (request.headers.range) {
             headers['Range'] = request.headers.range;
@@ -486,7 +512,7 @@ app.get('/stream', async (request, reply) => {
             headers['Referer'] = 'https://music.163.com/';
         }
 
-        const audioRes = await fetch(finalUrl, { headers });
+        const audioRes = await fetch(audioUrl, { headers });
 
         // 设置响应头
         reply.header('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
@@ -508,7 +534,7 @@ app.get('/stream', async (request, reply) => {
     }
 });
 
-// 封面代理
+// 封面代理（使用 V3 API 解析获取封面 URL）
 app.get('/cover', async (request, reply) => {
     const { source, id } = request.query;
 
@@ -516,10 +542,39 @@ app.get('/cover', async (request, reply) => {
         return reply.code(400).send({ error: '缺少参数' });
     }
 
-    const targetUrl = `${CONFIG.TUNEHUB_BASE}?source=${source}&id=${id}&type=pic`;
-
     try {
-        const res = await fetch(targetUrl, { redirect: 'follow' });
+        // 调用 V3 解析接口获取封面
+        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': CONFIG.TUNEHUB_API_KEY
+            },
+            body: JSON.stringify({
+                platform: source,
+                ids: String(id),
+                quality: CONFIG.BITRATE
+            })
+        });
+
+        if (!parseRes.ok) {
+            return reply.code(502).send({ error: '解析失败' });
+        }
+
+        const parseData = await parseRes.json();
+        // V3 API 返回嵌套结构
+        const songs = parseData.data?.data;
+        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
+            return reply.code(404).send({ error: '未找到封面' });
+        }
+
+        const coverUrl = songs[0].cover;
+        if (!coverUrl) {
+            return reply.code(404).send({ error: '封面链接不可用' });
+        }
+
+        // 代理封面图片
+        const res = await fetch(coverUrl, { redirect: 'follow' });
         reply.header('Content-Type', res.headers.get('content-type') || 'image/jpeg');
         reply.header('Cache-Control', 'public, max-age=86400');
         return reply.send(res.body);
@@ -528,7 +583,7 @@ app.get('/cover', async (request, reply) => {
     }
 });
 
-// 歌词代理
+// 歌词代理（使用 V3 API 解析获取歌词 URL）
 app.get('/lyric', async (request, reply) => {
     const { source, id } = request.query;
 
@@ -536,10 +591,39 @@ app.get('/lyric', async (request, reply) => {
         return reply.code(400).send({ error: '缺少参数' });
     }
 
-    const targetUrl = `${CONFIG.TUNEHUB_BASE}?source=${source}&id=${id}&type=lrc`;
-
     try {
-        const res = await fetch(targetUrl, { redirect: 'follow' });
+        // 调用 V3 解析接口获取歌词
+        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': CONFIG.TUNEHUB_API_KEY
+            },
+            body: JSON.stringify({
+                platform: source,
+                ids: String(id),
+                quality: CONFIG.BITRATE
+            })
+        });
+
+        if (!parseRes.ok) {
+            return reply.code(502).send({ error: '解析失败' });
+        }
+
+        const parseData = await parseRes.json();
+        // V3 API 返回嵌套结构
+        const songs = parseData.data?.data;
+        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
+            return reply.code(404).send({ error: '未找到歌词' });
+        }
+
+        const lrcUrl = songs[0].lyrics;
+        if (!lrcUrl) {
+            return reply.code(404).send({ error: '歌词不可用' });
+        }
+
+        // 获取歌词内容
+        const res = await fetch(lrcUrl, { redirect: 'follow' });
         const lrcText = await res.text();
         reply.header('Content-Type', 'text/plain; charset=utf-8');
         reply.header('Cache-Control', 'public, max-age=86400');
@@ -572,62 +656,133 @@ async function searchAndGetSongInfo(keyword, log) {
 }
 
 /**
- * 从指定音源获取歌曲
+ * 从指定音源获取歌曲 (TuneHub V3 API)
+ * 搜索使用方法下发模式（免费），解析使用 POST /v1/parse（消耗积分）
  */
 async function tryGetSongFromSource(keyword, source, log) {
-    // Step 1: 搜索
-    const searchUrl = `${CONFIG.TUNEHUB_BASE}?type=search&source=${source}&keyword=${encodeURIComponent(keyword)}&limit=1`;
-    const searchRes = await fetchWithRetry(searchUrl);
+    // Step 1: 获取搜索方法配置（免费）
+    const methodUrl = `${CONFIG.TUNEHUB_BASE}/v1/methods/${source}/search`;
+    const methodRes = await fetchWithRetry(methodUrl, {
+        headers: { 'X-API-Key': CONFIG.TUNEHUB_API_KEY }
+    });
+
+    if (!methodRes.ok) throw new Error(`获取搜索配置失败: ${methodRes.status}`);
+
+    const methodData = await methodRes.json();
+    if (methodData.code !== 0 || !methodData.data) {
+        throw new Error('搜索配置无效');
+    }
+
+    const searchConfig = methodData.data;
+
+    // Step 2: 替换模板变量并发起搜索请求（免费，直接请求上游）
+    const searchParams = {};
+    for (const [key, value] of Object.entries(searchConfig.params || {})) {
+        // 替换所有模板变量 {{xxx}}
+        let paramValue = String(value);
+        paramValue = paramValue.replace(/\{\{keyword\}\}/gi, keyword);
+        paramValue = paramValue.replace(/\{\{.*?page.*?\}\}/gi, '0');
+        paramValue = paramValue.replace(/\{\{.*?limit.*?\}\}/gi, '10');
+        paramValue = paramValue.replace(/\{\{.*?\}\}/g, ''); // 清理未知变量
+        searchParams[key] = paramValue;
+    }
+
+    const searchUrl = new URL(searchConfig.url);
+    searchUrl.search = new URLSearchParams(searchParams).toString();
+
+    const searchRes = await fetch(searchUrl.toString(), {
+        method: searchConfig.method || 'GET',
+        headers: searchConfig.headers || {}
+    });
 
     if (!searchRes.ok) throw new Error(`搜索失败: ${searchRes.status}`);
 
-    const searchData = await searchRes.json();
-    if (searchData.code !== 200 || !searchData.data?.results?.length) {
+    // Step 3: 解析搜索结果（根据平台不同，响应格式不同）
+    const searchText = await searchRes.text();
+    const songId = extractSongId(searchText, source, log);
+
+    if (!songId) {
         return null;
     }
 
-    const song = searchData.data.results[0];
-    const songId = song.id;
+    // Step 4: 调用解析接口获取播放链接（消耗积分）
+    const parseUrl = `${CONFIG.TUNEHUB_BASE}/v1/parse`;
+    const parseRes = await fetchWithRetry(parseUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': CONFIG.TUNEHUB_API_KEY
+        },
+        body: JSON.stringify({
+            platform: source,
+            ids: String(songId),
+            quality: CONFIG.BITRATE
+        })
+    });
 
-    // Step 2: 获取详情
-    const infoUrl = `${CONFIG.TUNEHUB_BASE}?type=info&source=${source}&id=${songId}&br=${CONFIG.BITRATE}`;
-    const infoRes = await fetchWithRetry(infoUrl);
+    if (!parseRes.ok) throw new Error(`解析失败: ${parseRes.status}`);
 
-    if (!infoRes.ok) throw new Error(`详情失败: ${infoRes.status}`);
-
-    const infoData = await infoRes.json();
-    if (infoData.code !== 200 || !infoData.data) {
-        throw new Error('获取详情失败');
+    const parseData = await parseRes.json();
+    // V3 API 返回嵌套结构: { data: { data: [...] } }
+    const songs = parseData.data?.data;
+    if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
+        throw new Error('解析歌曲失败');
     }
 
-    const info = infoData.data;
+    const song = songs[0];
+    const info = song.info || {};
 
-    // Step 3: 获取封面真实直链（微信需要原始平台的直链才能正确显示封面）
-    let coverUrl = info.pic || '';
-    if (coverUrl) {
-        try {
-            const coverRes = await fetch(coverUrl, { redirect: 'manual' });
-            if (coverRes.status === 301 || coverRes.status === 302) {
-                coverUrl = coverRes.headers.get('location') || coverUrl;
-            }
-        } catch (e) {
-            log.warn({ error: e.message }, '获取封面直链失败，使用原始地址');
-        }
-    }
-
-    // 构建代理 URL（隐藏 TuneHub）
+    // 构建响应
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
     return {
         code: 200,
-        title: info.name || song.name,
-        singer: info.artist || song.artist || '未知歌手',
-        cover: coverUrl || `${baseUrl}/cover?source=${source}&id=${songId}`,
+        title: info.name || '未知歌曲',
+        singer: info.artist || '未知歌手',
+        cover: song.cover || '',
         link: getDetailPageLink(source, songId),
-        music_url: `${baseUrl}/stream?source=${source}&id=${songId}&br=${CONFIG.BITRATE}`,
-        lyric: `${baseUrl}/lyric?source=${source}&id=${songId}`,
+        music_url: song.url || `${baseUrl}/stream?source=${source}&id=${songId}&br=${CONFIG.BITRATE}`,
+        lyric: song.lyrics || `${baseUrl}/lyric?source=${source}&id=${songId}`,
         source
     };
+}
+
+/**
+ * 从搜索响应中提取歌曲 ID（不同平台格式不同）
+ */
+function extractSongId(responseText, source, log) {
+    try {
+        const data = JSON.parse(responseText);
+
+        if (source === 'kuwo') {
+            // 酷我返回 JSON 格式: abslist[0].MUSICRID = "MUSIC_123456" 或 DC_TARGETID
+            const song = data.abslist?.[0];
+            if (!song) return null;
+
+            // 优先使用 DC_TARGETID，否则从 MUSICRID 提取
+            if (song.DC_TARGETID) return song.DC_TARGETID;
+            if (song.MUSICRID) {
+                const match = song.MUSICRID.match(/MUSIC_(\d+)/);
+                return match ? match[1] : null;
+            }
+            return null;
+        }
+
+        if (source === 'netease') {
+            // 网易云: result.songs[0].id
+            return data.result?.songs?.[0]?.id;
+        }
+
+        if (source === 'qq') {
+            // QQ音乐: data.song.list[0].songmid
+            return data.data?.song?.list?.[0]?.songmid;
+        }
+
+        return null;
+    } catch (e) {
+        log.warn({ error: e.message, source }, '解析搜索结果失败');
+        return null;
+    }
 }
 
 /**
