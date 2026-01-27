@@ -101,7 +101,7 @@ let cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', c
 const HEALTH_CHECK_INTERVAL = 60000; // 60秒缓存
 
 /**
- * 内部健康检查（不暴露上游细节）
+ * 内部健康检查（动态检测实际使用的音源）
  */
 async function checkServiceHealth() {
     const now = Date.now();
@@ -110,17 +110,26 @@ async function checkServiceHealth() {
     }
 
     try {
-        // 探测上游解析服务
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5000);
 
-        const res = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/methods`, {
-            signal: controller.signal,
-            headers: {
-                'User-Agent': 'HBMusic-HealthCheck/1.0',
-                'X-API-Key': CONFIG.TUNEHUB_API_KEY
-            }
-        });
+        let res;
+        if (CONFIG.FORCE_FALLBACK) {
+            // 检测备用 API（kw-api.cenguigui.cn）
+            res = await fetch(`${CONFIG.KUWO_FALLBACK_API}?name=test&page=1&limit=1`, {
+                signal: controller.signal,
+                headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+            });
+        } else {
+            // 检测 TuneHub API
+            res = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/methods`, {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'HBMusic-HealthCheck/1.0',
+                    'X-API-Key': CONFIG.TUNEHUB_API_KEY
+                }
+            });
+        }
         clearTimeout(timeout);
 
         if (res.ok) {
@@ -133,7 +142,7 @@ async function checkServiceHealth() {
             cachedHealthStatus = { status: 'degraded', text: '服务波动 · 正在修复', color: '#FF9500', lastCheck: now };
         }
     } catch (error) {
-        // 证书过期等连接异常，但实际上我们已开启跳过验证，可能仍能使用
+        // 证书过期等连接异常
         if (error.name === 'AbortError') {
             app.log.warn('上游服务响应超时');
             cachedHealthStatus = { status: 'degraded', text: '服务波动 · 响应缓慢', color: '#FF9500', lastCheck: now };
