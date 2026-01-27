@@ -34,6 +34,10 @@ services:
       - TUNEHUB_BASE=https://tunehub.sayqz.com/api
       - TUNEHUB_API_KEY=th_8f00d8709dba9d4480ba191668147e1b7b936920920fa66f
 
+      # 强制使用备用 API（手动切换开关）
+      # 设为 true 时跳过 TuneHub，直接使用 kw-api.cenguigui.cn
+      - FORCE_FALLBACK=true
+
       # 忽略 SSL 证书问题
       - NODE_TLS_REJECT_UNAUTHORIZED=0
 

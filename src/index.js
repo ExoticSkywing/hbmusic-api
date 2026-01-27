@@ -22,6 +22,11 @@ const CONFIG = {
     MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '2'),
     // 音源优先级：酷我优先
     SOURCE_PRIORITY: (process.env.SOURCE_PRIORITY || 'kuwo,netease,qq').split(','),
+    // 备用：酷我第三方 API（无需积分）
+    KUWO_FALLBACK_API: process.env.KUWO_FALLBACK_API || 'https://kw-api.cenguigui.cn',
+    KUWO_FALLBACK_QUALITY: process.env.KUWO_FALLBACK_QUALITY || 'standard',
+    // 强制使用备用 API（手动切换开关）
+    FORCE_FALLBACK: process.env.FORCE_FALLBACK === 'true',
 };
 
 // ============= Fastify 实例 =============
@@ -385,6 +390,9 @@ app.addHook('onRequest', async (request, reply) => {
                 <span class="icon">❓</span> 使用帮助
             </div>
             <div class="help-content" id="helpContent">
+                <p style="color: #FF9500; margin-bottom: 8px;">⚠️ <b>温馨提示</b></p>
+                <p>由于上游平台调整，本服务运营存在成本开支。为确保长期稳定运行，请合理使用点歌功能，避免频繁刷歌。感谢您的理解与支持！💖</p>
+                <hr style="border: none; border-top: 1px dashed rgba(0,0,0,0.1); margin: 12px 0;">
                 <p>💡 若点歌插件无响应，请先访问此页确认<span class="highlight">服务状态</span></p>
                 <p>✅ 页面能正常打开 = 后端运行正常</p>
                 <p>📦 如有问题请点击右下角客服咨询</p>
@@ -633,22 +641,128 @@ app.get('/lyric', async (request, reply) => {
     }
 });
 
+// ============= 备用 API 代理端点（隐藏第三方 API 地址）=============
+
+// 备用音频流代理
+app.get('/fallback-stream', async (request, reply) => {
+    const { id } = request.query;
+
+    if (!id) {
+        return reply.code(400).send({ error: '缺少 id 参数' });
+    }
+
+    try {
+        // 调用第三方 API 获取音频
+        const audioUrl = `${CONFIG.KUWO_FALLBACK_API}?id=${id}&type=song&level=${CONFIG.KUWO_FALLBACK_QUALITY}&format=mp3`;
+        const audioRes = await fetch(audioUrl, {
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+
+        if (!audioRes.ok) {
+            return reply.code(502).send({ error: '音频获取失败' });
+        }
+
+        // 转发响应
+        reply.header('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
+        reply.header('Accept-Ranges', 'bytes');
+        if (audioRes.headers.get('content-length')) {
+            reply.header('Content-Length', audioRes.headers.get('content-length'));
+        }
+
+        return reply.send(audioRes.body);
+    } catch (error) {
+        request.log.error(error, '备用音频代理失败');
+        return reply.code(502).send({ error: '音频获取失败' });
+    }
+});
+
+// 备用歌词代理
+app.get('/fallback-lyric', async (request, reply) => {
+    const { id } = request.query;
+
+    if (!id) {
+        return reply.code(400).send({ error: '缺少 id 参数' });
+    }
+
+    try {
+        const lrcUrl = `${CONFIG.KUWO_FALLBACK_API}?id=${id}&type=lyr&format=all`;
+        const res = await fetch(lrcUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+
+        if (!res.ok) {
+            return reply.code(502).send({ error: '歌词获取失败' });
+        }
+
+        const lrcText = await res.text();
+        reply.header('Content-Type', 'text/plain; charset=utf-8');
+        reply.header('Cache-Control', 'public, max-age=86400');
+        return reply.send(lrcText);
+    } catch (error) {
+        return reply.code(502).send({ error: '歌词获取失败' });
+    }
+});
+
 // ============= 核心逻辑 =============
 
 /**
  * 搜索歌曲并获取完整信息
+ * 优先使用 TuneHub API，积分不足或失败时降级到备用 API
  */
 async function searchAndGetSongInfo(keyword, log) {
+    // 强制使用备用 API（手动切换开关）
+    if (CONFIG.FORCE_FALLBACK) {
+        log.info({ keyword }, '强制使用备用 API (FORCE_FALLBACK=true)');
+        try {
+            const fallbackResult = await tryKuwoFallbackAPI(keyword, log);
+            if (fallbackResult) {
+                log.info({ title: fallbackResult.title }, '备用 API 获取成功');
+                return fallbackResult;
+            }
+        } catch (fallbackError) {
+            log.error({ error: fallbackError.message }, '备用 API 失败');
+            return { code: 500, message: '备用 API 失败: ' + fallbackError.message };
+        }
+    }
+
+    let lastError = null;
+    let shouldFallback = false;
+
+    // 优先尝试 TuneHub API（消耗积分）
     for (const source of CONFIG.SOURCE_PRIORITY) {
         try {
             const result = await tryGetSongFromSource(keyword, source, log);
             if (result) {
-                log.info({ source, title: result.title }, '获取歌曲成功');
+                log.info({ source, title: result.title }, '获取歌曲成功 (TuneHub)');
                 return result;
             }
         } catch (error) {
+            lastError = error;
+            // 积分不足 (403/402) 或服务不可用时，标记需要降级
+            if (error.message?.includes('403') || error.message?.includes('402') || error.message?.includes('积分')) {
+                log.warn({ source, error: error.message }, 'TuneHub 积分不足，准备降级到备用 API');
+                shouldFallback = true;
+                break;
+            }
             log.warn({ source, error: error.message }, '音源搜索失败，尝试下一个');
             continue;
+        }
+    }
+
+    // 降级到备用 API（免费，无需积分）
+    if (shouldFallback || lastError) {
+        try {
+            log.info({ keyword }, '尝试备用 API (kw-api.cenguigui.cn)');
+            const fallbackResult = await tryKuwoFallbackAPI(keyword, log);
+            if (fallbackResult) {
+                log.info({ title: fallbackResult.title }, '备用 API 获取成功');
+                return fallbackResult;
+            }
+        } catch (fallbackError) {
+            log.error({ error: fallbackError.message }, '备用 API 也失败了');
         }
     }
 
@@ -783,6 +897,43 @@ function extractSongId(responseText, source, log) {
         log.warn({ error: e.message, source }, '解析搜索结果失败');
         return null;
     }
+}
+
+/**
+ * 备用 API：调用 kw-api.cenguigui.cn（免费，无需积分）
+ */
+async function tryKuwoFallbackAPI(keyword, log) {
+    const url = `${CONFIG.KUWO_FALLBACK_API}?name=${encodeURIComponent(keyword)}&page=1&limit=1`;
+
+    const res = await fetchWithRetry(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+
+    if (!res.ok) {
+        throw new Error(`备用 API 请求失败: ${res.status}`);
+    }
+
+    const data = await res.json();
+    if (data.code !== 200 || !data.data?.length) {
+        throw new Error('备用 API 未找到结果');
+    }
+
+    const song = data.data[0];
+
+    // 使用本地代理 URL，隐藏第三方 API 地址
+    const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
+
+    return {
+        code: 200,
+        title: song.name || '未知歌曲',
+        singer: song.artist || '未知歌手',
+        cover: song.pic || '',
+        link: `https://www.kuwo.cn/play_detail/${song.rid}`,
+        // 使用代理端点，不暴露第三方 API
+        music_url: `${baseUrl}/fallback-stream?id=${song.rid}`,
+        lyric: `${baseUrl}/fallback-lyric?id=${song.rid}`,
+        source: 'kuwo-fallback'
+    };
 }
 
 /**
