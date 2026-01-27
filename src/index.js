@@ -400,7 +400,7 @@ app.addHook('onRequest', async (request, reply) => {
             </div>
             <div class="help-content" id="helpContent">
                 <p style="color: #FF9500; margin-bottom: 8px;">⚠️ <b>温馨提示</b></p>
-                <p>由于上游平台调整，本服务运营存在成本开支。为确保长期稳定运行，请合理使用点歌功能，避免频繁刷歌。感谢您的理解与支持！💖</p>
+                <p>此前有人恶意刷歌，导致资源浪费严重。为确保长期稳定运行，请合理使用点歌功能，避免频繁刷歌。感谢您的理解与支持！💖</p>
                 <hr style="border: none; border-top: 1px dashed rgba(0,0,0,0.1); margin: 12px 0;">
                 <p>💡 若点歌插件无响应，请先访问此页确认<span class="highlight">服务状态</span></p>
                 <p>✅ 页面能正常打开 = 后端运行正常</p>
