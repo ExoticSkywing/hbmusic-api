@@ -933,42 +933,86 @@ function extractSongId(responseText, source, log) {
 }
 
 /**
- * 备用 API：调用 api.cenguigui.cn/api/kuwo/（免费，无需积分）
- * 该 API 直接返回单首歌曲的完整信息，包括音频 URL、封面、歌词
+ * 备用 API：组合使用酷我官方搜索 + cenguigui 解析（免费，无需积分）
+ * Step 1: 使用 search.kuwo.cn 搜索歌曲获取 rid
+ * Step 2: 使用 api.cenguigui.cn/api/kuwo/?rid=xxx 解析获取音频链接
  */
 async function tryKuwoFallbackAPI(keyword, log) {
-    const url = `${CONFIG.KUWO_FALLBACK_API}?name=${encodeURIComponent(keyword)}`;
+    // Step 1: 搜索歌曲获取 rid
+    const searchUrl = `https://search.kuwo.cn/r.s?all=${encodeURIComponent(keyword)}&ft=music&itemset=web_2013&client=kt&pn=0&rn=1&rformat=json&encoding=utf8`;
 
-    const res = await fetchWithRetry(url, {
+    log.info({ keyword }, '备用 API: 正在搜索歌曲...');
+
+    const searchRes = await fetchWithRetry(searchUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
 
-    if (!res.ok) {
-        throw new Error(`备用 API 请求失败: ${res.status}`);
+    if (!searchRes.ok) {
+        throw new Error(`酷我搜索 API 请求失败: ${searchRes.status}`);
     }
 
-    const responseData = await res.json();
-    // 新 API 格式：{ code: 200, msg: "解析成功", data: { rid, name, artist, album, pic, url, lrc } }
-    if (responseData.code !== 200 || !responseData.data) {
-        throw new Error('备用 API 未找到结果: ' + (responseData.msg || '未知错误'));
+    // 酷我搜索 API 返回的是非标准 JSON（单引号），需要特殊处理
+    let searchText = await searchRes.text();
+    // 将单引号替换为双引号以解析 JSON
+    searchText = searchText.replace(/'/g, '"');
+
+    let searchData;
+    try {
+        searchData = JSON.parse(searchText);
+    } catch (e) {
+        throw new Error('酷我搜索结果解析失败: ' + e.message);
     }
 
-    const song = responseData.data;
+    if (!searchData.abslist || searchData.abslist.length === 0) {
+        throw new Error('备用 API 未找到歌曲');
+    }
+
+    const firstSong = searchData.abslist[0];
+    // 从 MUSICRID 提取数字 ID，格式为 "MUSIC_123456"
+    const musicRid = firstSong.MUSICRID || firstSong.DC_TARGETID;
+    const rid = musicRid?.replace?.('MUSIC_', '') || musicRid;
+
+    if (!rid) {
+        throw new Error('无法提取歌曲 ID');
+    }
+
+    const songName = firstSong.SONGNAME || firstSong.NAME || '未知歌曲';
+    const artistName = firstSong.ARTIST || '未知歌手';
+
+    log.info({ rid, songName, artistName }, '备用 API: 搜索成功，正在解析音频...');
+
+    // Step 2: 使用 cenguigui API 解析获取音频链接
+    const parseUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${rid}`;
+
+    const parseRes = await fetchWithRetry(parseUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+
+    if (!parseRes.ok) {
+        throw new Error(`解析 API 请求失败: ${parseRes.status}`);
+    }
+
+    const parseData = await parseRes.json();
+    if (parseData.code !== 200 || !parseData.data) {
+        throw new Error('解析 API 失败: ' + (parseData.msg || '未知错误'));
+    }
+
+    const song = parseData.data;
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
     return {
         code: 200,
-        title: song.name || '未知歌曲',
-        singer: song.artist || '未知歌手',
+        title: song.name || songName,
+        singer: song.artist || artistName,
         cover: song.pic || '',
-        link: `https://www.kuwo.cn/play_detail/${song.rid}`,
-        // 新 API 直接返回音频 URL，使用代理端点转发以隐藏来源
-        music_url: `${baseUrl}/fallback-stream?id=${song.rid}`,
-        // 歌词直接内联返回，使用代理端点
-        lyric: `${baseUrl}/fallback-lyric?id=${song.rid}`,
+        link: `https://www.kuwo.cn/play_detail/${rid}`,
+        // 使用代理端点转发以隐藏来源
+        music_url: `${baseUrl}/fallback-stream?id=${rid}`,
+        lyric: `${baseUrl}/fallback-lyric?id=${rid}`,
         source: 'kuwo-fallback'
     };
 }
+
 
 /**
  * 生成详情页链接
