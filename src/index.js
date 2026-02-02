@@ -23,7 +23,8 @@ const CONFIG = {
     // 音源优先级：酷我优先
     SOURCE_PRIORITY: (process.env.SOURCE_PRIORITY || 'kuwo,netease,qq').split(','),
     // 备用：酷我第三方 API（无需积分）
-    KUWO_FALLBACK_API: process.env.KUWO_FALLBACK_API || 'https://kw-api.cenguigui.cn',
+    // 注意：api.cenguigui.cn/api/kuwo/ 返回格式与旧 API 不同，直接返回单首歌曲完整数据
+    KUWO_FALLBACK_API: process.env.KUWO_FALLBACK_API || 'https://api.cenguigui.cn/api/kuwo/',
     KUWO_FALLBACK_QUALITY: process.env.KUWO_FALLBACK_QUALITY || 'standard',
     // 强制使用备用 API（手动切换开关）
     FORCE_FALLBACK: process.env.FORCE_FALLBACK === 'true',
@@ -115,8 +116,8 @@ async function checkServiceHealth() {
 
         let res;
         if (CONFIG.FORCE_FALLBACK) {
-            // 检测备用 API（kw-api.cenguigui.cn）
-            res = await fetch(`${CONFIG.KUWO_FALLBACK_API}?name=test&page=1&limit=1`, {
+            // 检测备用 API（api.cenguigui.cn）
+            res = await fetch(`${CONFIG.KUWO_FALLBACK_API}?name=test`, {
                 signal: controller.signal,
                 headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
             });
@@ -661,8 +662,24 @@ app.get('/fallback-stream', async (request, reply) => {
     }
 
     try {
-        // 调用第三方 API 获取音频
-        const audioUrl = `${CONFIG.KUWO_FALLBACK_API}?id=${id}&type=song&level=${CONFIG.KUWO_FALLBACK_QUALITY}&format=mp3`;
+        // 新 API：通过歌曲 ID 获取完整信息（包含音频 URL）
+        const infoUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${id}`;
+        const infoRes = await fetch(infoUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+
+        if (!infoRes.ok) {
+            return reply.code(502).send({ error: '音频信息获取失败' });
+        }
+
+        const infoData = await infoRes.json();
+        if (infoData.code !== 200 || !infoData.data?.url) {
+            return reply.code(404).send({ error: '未找到音频链接' });
+        }
+
+        const audioUrl = infoData.data.url;
+
+        // 请求真实音频并转发
         const audioRes = await fetch(audioUrl, {
             redirect: 'follow',
             headers: {
@@ -697,16 +714,22 @@ app.get('/fallback-lyric', async (request, reply) => {
     }
 
     try {
-        const lrcUrl = `${CONFIG.KUWO_FALLBACK_API}?id=${id}&type=lyr&format=all`;
-        const res = await fetch(lrcUrl, {
+        // 新 API：通过歌曲 ID 获取完整信息（包含歌词）
+        const infoUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${id}`;
+        const res = await fetch(infoUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
 
         if (!res.ok) {
-            return reply.code(502).send({ error: '歌词获取失败' });
+            return reply.code(502).send({ error: '歌词信息获取失败' });
         }
 
-        const lrcText = await res.text();
+        const infoData = await res.json();
+        if (infoData.code !== 200 || !infoData.data?.lrc) {
+            return reply.code(404).send({ error: '未找到歌词' });
+        }
+
+        const lrcText = infoData.data.lrc;
         reply.header('Content-Type', 'text/plain; charset=utf-8');
         reply.header('Cache-Control', 'public, max-age=86400');
         return reply.send(lrcText);
@@ -714,6 +737,7 @@ app.get('/fallback-lyric', async (request, reply) => {
         return reply.code(502).send({ error: '歌词获取失败' });
     }
 });
+
 
 // ============= 核心逻辑 =============
 
@@ -909,10 +933,11 @@ function extractSongId(responseText, source, log) {
 }
 
 /**
- * 备用 API：调用 kw-api.cenguigui.cn（免费，无需积分）
+ * 备用 API：调用 api.cenguigui.cn/api/kuwo/（免费，无需积分）
+ * 该 API 直接返回单首歌曲的完整信息，包括音频 URL、封面、歌词
  */
 async function tryKuwoFallbackAPI(keyword, log) {
-    const url = `${CONFIG.KUWO_FALLBACK_API}?name=${encodeURIComponent(keyword)}&page=1&limit=1`;
+    const url = `${CONFIG.KUWO_FALLBACK_API}?name=${encodeURIComponent(keyword)}`;
 
     const res = await fetchWithRetry(url, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
@@ -922,14 +947,13 @@ async function tryKuwoFallbackAPI(keyword, log) {
         throw new Error(`备用 API 请求失败: ${res.status}`);
     }
 
-    const data = await res.json();
-    if (data.code !== 200 || !data.data?.length) {
-        throw new Error('备用 API 未找到结果');
+    const responseData = await res.json();
+    // 新 API 格式：{ code: 200, msg: "解析成功", data: { rid, name, artist, album, pic, url, lrc } }
+    if (responseData.code !== 200 || !responseData.data) {
+        throw new Error('备用 API 未找到结果: ' + (responseData.msg || '未知错误'));
     }
 
-    const song = data.data[0];
-
-    // 使用本地代理 URL，隐藏第三方 API 地址
+    const song = responseData.data;
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
     return {
@@ -938,8 +962,9 @@ async function tryKuwoFallbackAPI(keyword, log) {
         singer: song.artist || '未知歌手',
         cover: song.pic || '',
         link: `https://www.kuwo.cn/play_detail/${song.rid}`,
-        // 使用代理端点，不暴露第三方 API
+        // 新 API 直接返回音频 URL，使用代理端点转发以隐藏来源
         music_url: `${baseUrl}/fallback-stream?id=${song.rid}`,
+        // 歌词直接内联返回，使用代理端点
         lyric: `${baseUrl}/fallback-lyric?id=${song.rid}`,
         source: 'kuwo-fallback'
     };
