@@ -15,20 +15,19 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const CONFIG = {
     PORT: parseInt(process.env.PORT || '3000'),
     HOST: process.env.HOST || '0.0.0.0',
-    // TuneHub V3 API
+    // TuneHub V3 API（后备，需要积分）
     TUNEHUB_BASE: process.env.TUNEHUB_BASE || 'https://tunehub.sayqz.com/api',
     TUNEHUB_API_KEY: process.env.TUNEHUB_API_KEY || '',
     BITRATE: process.env.BITRATE || '320k',
     MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '2'),
-    // 音源优先级：酷我优先
+    // 音源优先级（TuneHub 模式时使用）
     SOURCE_PRIORITY: (process.env.SOURCE_PRIORITY || 'kuwo,netease,qq').split(','),
-    // 备用：酷我第三方 API（无需积分）
-    // 注意：api.cenguigui.cn/api/kuwo/ 返回格式与旧 API 不同，直接返回单首歌曲完整数据
-    KUWO_FALLBACK_API: process.env.KUWO_FALLBACK_API || 'https://api.cenguigui.cn/api/kuwo/',
-    KUWO_FALLBACK_QUALITY: process.env.KUWO_FALLBACK_QUALITY || 'standard',
-    // 强制使用备用 API（手动切换开关）
+    // 主要 API：ygking QQ 音乐 API（免费，支持 VIP 歌曲）
+    YGKING_API: process.env.YGKING_API || 'https://api.ygking.top',
+    // 强制使用主要 API（跳过 TuneHub）
     FORCE_FALLBACK: process.env.FORCE_FALLBACK === 'true',
 };
+
 
 // ============= Fastify 实例 =============
 const app = Fastify({
@@ -116,8 +115,8 @@ async function checkServiceHealth() {
 
         let res;
         if (CONFIG.FORCE_FALLBACK) {
-            // 检测备用 API（api.cenguigui.cn）
-            res = await fetch(`${CONFIG.KUWO_FALLBACK_API}?name=test`, {
+            // 检测主要 API（ygking QQ 音乐）
+            res = await fetch(`${CONFIG.YGKING_API}/api/search?keyword=test&type=song&num=1`, {
                 signal: controller.signal,
                 headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
             });
@@ -651,39 +650,39 @@ app.get('/lyric', async (request, reply) => {
     }
 });
 
-// ============= 备用 API 代理端点（隐藏第三方 API 地址）=============
+// ============= 主要 API 代理端点（ygking QQ 音乐）=============
 
-// 备用音频流代理
+// 音频流代理
 app.get('/fallback-stream', async (request, reply) => {
-    const { id } = request.query;
+    const { mid } = request.query;
 
-    if (!id) {
-        return reply.code(400).send({ error: '缺少 id 参数' });
+    if (!mid) {
+        return reply.code(400).send({ error: '缺少 mid 参数' });
     }
 
     try {
-        // 新 API：通过歌曲 ID 获取完整信息（包含音频 URL）
-        const infoUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${id}`;
-        const infoRes = await fetch(infoUrl, {
+        // 通过 ygking API 获取播放链接
+        const urlRes = await fetch(`${CONFIG.YGKING_API}/api/song/url?mid=${mid}`, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
 
-        if (!infoRes.ok) {
-            return reply.code(502).send({ error: '音频信息获取失败' });
+        if (!urlRes.ok) {
+            return reply.code(502).send({ error: '音频链接获取失败' });
         }
 
-        const infoData = await infoRes.json();
-        if (infoData.code !== 200 || !infoData.data?.url) {
+        const urlData = await urlRes.json();
+        if (urlData.code !== 0 || !urlData.data?.[mid]) {
             return reply.code(404).send({ error: '未找到音频链接' });
         }
 
-        const audioUrl = infoData.data.url;
+        const audioUrl = urlData.data[mid];
 
         // 请求真实音频并转发
         const audioRes = await fetch(audioUrl, {
             redirect: 'follow',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://y.qq.com/'
             }
         });
 
@@ -700,36 +699,35 @@ app.get('/fallback-stream', async (request, reply) => {
 
         return reply.send(audioRes.body);
     } catch (error) {
-        request.log.error(error, '备用音频代理失败');
+        request.log.error(error, 'ygking 音频代理失败');
         return reply.code(502).send({ error: '音频获取失败' });
     }
 });
 
-// 备用歌词代理
+// 歌词代理
 app.get('/fallback-lyric', async (request, reply) => {
-    const { id } = request.query;
+    const { mid } = request.query;
 
-    if (!id) {
-        return reply.code(400).send({ error: '缺少 id 参数' });
+    if (!mid) {
+        return reply.code(400).send({ error: '缺少 mid 参数' });
     }
 
     try {
-        // 新 API：通过歌曲 ID 获取完整信息（包含歌词）
-        const infoUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${id}`;
-        const res = await fetch(infoUrl, {
+        // 通过 ygking API 获取歌词
+        const res = await fetch(`${CONFIG.YGKING_API}/api/lyric?mid=${mid}`, {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
 
         if (!res.ok) {
-            return reply.code(502).send({ error: '歌词信息获取失败' });
+            return reply.code(502).send({ error: '歌词获取失败' });
         }
 
-        const infoData = await res.json();
-        if (infoData.code !== 200 || !infoData.data?.lrc) {
+        const lyricData = await res.json();
+        if (lyricData.code !== 0 || !lyricData.data?.lyric) {
             return reply.code(404).send({ error: '未找到歌词' });
         }
 
-        const lrcText = infoData.data.lrc;
+        const lrcText = lyricData.data.lyric;
         reply.header('Content-Type', 'text/plain; charset=utf-8');
         reply.header('Cache-Control', 'public, max-age=86400');
         return reply.send(lrcText);
@@ -933,85 +931,62 @@ function extractSongId(responseText, source, log) {
 }
 
 /**
- * 备用 API：组合使用酷我官方搜索 + cenguigui 解析（免费，无需积分）
- * Step 1: 使用 search.kuwo.cn 搜索歌曲获取 rid
- * Step 2: 使用 api.cenguigui.cn/api/kuwo/?rid=xxx 解析获取音频链接
+ * 主要 API：使用 ygking QQ 音乐 API（免费，支持 VIP 歌曲）
+ * Step 1: 搜索歌曲获取 mid
+ * Step 2: 返回代理端点 URL
  */
-async function tryKuwoFallbackAPI(keyword, log) {
-    // Step 1: 搜索歌曲获取 rid
-    const searchUrl = `https://search.kuwo.cn/r.s?all=${encodeURIComponent(keyword)}&ft=music&itemset=web_2013&client=kt&pn=0&rn=1&rformat=json&encoding=utf8`;
+async function tryYgkingAPI(keyword, log) {
+    // Step 1: 搜索歌曲
+    const searchUrl = `${CONFIG.YGKING_API}/api/search?keyword=${encodeURIComponent(keyword)}&type=song&num=1`;
 
-    log.info({ keyword }, '备用 API: 正在搜索歌曲...');
+    log.info({ keyword }, 'ygking API: 正在搜索歌曲...');
 
     const searchRes = await fetchWithRetry(searchUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
     });
 
     if (!searchRes.ok) {
-        throw new Error(`酷我搜索 API 请求失败: ${searchRes.status}`);
+        throw new Error(`ygking 搜索 API 请求失败: ${searchRes.status}`);
     }
 
-    // 酷我搜索 API 返回的是非标准 JSON（单引号），需要特殊处理
-    let searchText = await searchRes.text();
-    // 将单引号替换为双引号以解析 JSON
-    searchText = searchText.replace(/'/g, '"');
+    const searchData = await searchRes.json();
 
-    let searchData;
-    try {
-        searchData = JSON.parse(searchText);
-    } catch (e) {
-        throw new Error('酷我搜索结果解析失败: ' + e.message);
+    if (searchData.code !== 0 || !searchData.data?.list?.length) {
+        throw new Error('ygking API 未找到歌曲');
     }
 
-    if (!searchData.abslist || searchData.abslist.length === 0) {
-        throw new Error('备用 API 未找到歌曲');
+    const firstSong = searchData.data.list[0];
+    const mid = firstSong.mid;
+
+    if (!mid) {
+        throw new Error('无法获取歌曲 mid');
     }
 
-    const firstSong = searchData.abslist[0];
-    // 从 MUSICRID 提取数字 ID，格式为 "MUSIC_123456"
-    const musicRid = firstSong.MUSICRID || firstSong.DC_TARGETID;
-    const rid = musicRid?.replace?.('MUSIC_', '') || musicRid;
+    // 提取歌曲信息
+    const songName = firstSong.name || firstSong.title || '未知歌曲';
+    const singers = firstSong.singer || [];
+    const artistName = singers.map(s => s.name).join('/') || '未知歌手';
+    const album = firstSong.album || {};
 
-    if (!rid) {
-        throw new Error('无法提取歌曲 ID');
-    }
+    log.info({ mid, songName, artistName }, 'ygking API: 搜索成功');
 
-    const songName = firstSong.SONGNAME || firstSong.NAME || '未知歌曲';
-    const artistName = firstSong.ARTIST || '未知歌手';
-
-    log.info({ rid, songName, artistName }, '备用 API: 搜索成功，正在解析音频...');
-
-    // Step 2: 使用 cenguigui API 解析获取音频链接
-    const parseUrl = `${CONFIG.KUWO_FALLBACK_API}?rid=${rid}`;
-
-    const parseRes = await fetchWithRetry(parseUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-
-    if (!parseRes.ok) {
-        throw new Error(`解析 API 请求失败: ${parseRes.status}`);
-    }
-
-    const parseData = await parseRes.json();
-    if (parseData.code !== 200 || !parseData.data) {
-        throw new Error('解析 API 失败: ' + (parseData.msg || '未知错误'));
-    }
-
-    const song = parseData.data;
     const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
 
     return {
         code: 200,
-        title: song.name || songName,
-        singer: song.artist || artistName,
-        cover: song.pic || '',
-        link: `https://www.kuwo.cn/play_detail/${rid}`,
-        // 使用代理端点转发以隐藏来源
-        music_url: `${baseUrl}/fallback-stream?id=${rid}`,
-        lyric: `${baseUrl}/fallback-lyric?id=${rid}`,
-        source: 'kuwo-fallback'
+        title: songName,
+        singer: artistName,
+        cover: album.mid ? `https://y.qq.com/music/photo_new/T002R300x300M000${album.mid}.jpg` : '',
+        link: `https://y.qq.com/n/ryqq/songDetail/${mid}`,
+        // 使用代理端点，传递 mid 参数
+        music_url: `${baseUrl}/fallback-stream?mid=${mid}`,
+        lyric: `${baseUrl}/fallback-lyric?mid=${mid}`,
+        source: 'ygking-qq'
     };
 }
+
+// 保持向后兼容的别名
+const tryKuwoFallbackAPI = tryYgkingAPI;
 
 
 /**
