@@ -1,33 +1,50 @@
 /**
  * HBMusic - 微信点歌插件后端服务
  * 
- * 基于 TuneHub API，支持网易云、QQ音乐、酷我音乐
- * 优先使用酷我音源，自动换源保证可用性
+ * 多上游架构：支持降级兜底
+ * - 主上游: qqmusicapi.1yo.cc (Cloudflare Workers)
+ * - 备用上游: qq-music-api-v2 (本地服务)
  */
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 
-// 解决下游 TuneHub 服务证书过期问题
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
 // ============= 配置 =============
 const CONFIG = {
     PORT: parseInt(process.env.PORT || '3000'),
     HOST: process.env.HOST || '0.0.0.0',
-    // TuneHub V3 API（后备，需要积分）
-    TUNEHUB_BASE: process.env.TUNEHUB_BASE || 'https://tunehub.sayqz.com/api',
-    TUNEHUB_API_KEY: process.env.TUNEHUB_API_KEY || '',
-    BITRATE: process.env.BITRATE || '320k',
+    BASE_URL: process.env.BASE_URL || 'http://localhost:3000',
+    // 最大重试次数
     MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '2'),
-    // 音源优先级（TuneHub 模式时使用）
-    SOURCE_PRIORITY: (process.env.SOURCE_PRIORITY || 'kuwo,netease,qq').split(','),
-    // 主要 API：ygking QQ 音乐 API（免费，支持 VIP 歌曲）
-    YGKING_API: process.env.YGKING_API || 'https://api.ygking.top',
-    // 强制使用主要 API（跳过 TuneHub）
-    FORCE_FALLBACK: process.env.FORCE_FALLBACK === 'true',
+    // 上游请求超时（毫秒）- Lucky API 响应较慢，需要较长超时
+    UPSTREAM_TIMEOUT: parseInt(process.env.UPSTREAM_TIMEOUT || '15000'),
+    // 公告开关（true 显示，false 隐藏）
+    SHOW_ANNOUNCEMENT: process.env.SHOW_ANNOUNCEMENT === 'true',
+    // 公告内容（可自定义）
+    ANNOUNCEMENT_TEXT: process.env.ANNOUNCEMENT_TEXT || '系统升级中 · 正在为您打造更稳定、更优质的点歌体验，近期服务可能有波动，敬请谅解',
 };
 
+// ============= 多上游配置 =============
+// 按优先级排序，依次尝试
+const UPSTREAMS = [
+    // 主上游：Lucky API - 直接返回真实播放链接，无需代理
+    {
+        name: 'lucky',
+        type: 'lucky',
+        url: process.env.LUCKY_API || 'https://cer.luckying.love/music/Lucky.php',
+    },
+    // 兜底上游：本地 QQ 音乐服务
+    {
+        name: 'qq-music-api-v2',
+        type: 'qqmusic',
+        url: process.env.QQMUSIC_FALLBACK || 'http://qq-music-api-v2:18200',
+        endpoints: {
+            search: '/api/search',
+            url: '/api/song/url',
+            lyric: '/api/lyric',
+        }
+    },
+];
 
 // ============= Fastify 实例 =============
 const app = Fastify({
@@ -44,116 +61,74 @@ const app = Fastify({
 await app.register(cors, { origin: true });
 
 // ============= 安全防护 =============
+const SENSITIVE_PATHS = ['/admin', '/config', '/system', '/manage', '/backend', '/.env', '/.git', '/wp-'];
 
-// 敏感路径前缀（扫描器常探测的路径）
-const SENSITIVE_PATHS = ['/api', '/admin', '/config', '/system', '/manage', '/backend', '/.env', '/.git', '/wp-'];
-
-// 敏感路径拦截钩子
 app.addHook('onRequest', async (request, reply) => {
     const path = request.url.split('?')[0].toLowerCase();
-
-    // 检查是否命中敏感路径前缀
     if (SENSITIVE_PATHS.some(prefix => path.startsWith(prefix))) {
         request.log.warn({ path, ip: request.ip }, '敏感路径探测被拦截');
         return reply.code(403).send('Forbidden');
     }
 });
 
-// 统一 404 响应（不泄露技术栈信息）
 app.setNotFoundHandler((request, reply) => {
     reply.code(404).send('Not Found');
 });
 
 // ============= 客户端验证 =============
-// 是否启用 UA 验证（默认启用）
 const UA_FILTER_ENABLED = process.env.UA_FILTER !== 'false';
-
-// 需要验证的路由列表（主接口）
 const PROTECTED_ROUTES = ['/'];
 
-// 浏览器 UA 黑名单关键字（拒绝这些）
 const BROWSER_BLACKLIST = [
-    // 国际主流浏览器
-    'Chrome/',
-    'Firefox/',
-    'Safari/',
-    'Edge/',
-    'Opera/',
-    'MSIE',
-    'Trident/',
-    // 国内浏览器
-    'QQBrowser/',
-    'UCBrowser/',
-    'MiuiBrowser/',
-    '360SE',
-    '360EE',
-    'Baidu',
-    'Sogou',
-    'Quark/',
-    'LBBROWSER',
-    'Maxthon/',
-    '2345Explorer/',
+    'Chrome/', 'Firefox/', 'Safari/', 'Edge/', 'Opera/', 'MSIE', 'Trident/',
+    'QQBrowser/', 'UCBrowser/', 'MiuiBrowser/', '360SE', '360EE', 'Baidu',
+    'Sogou', 'Quark/', 'LBBROWSER', 'Maxthon/', '2345Explorer/', 'HuaweiBrowser/'
 ];
 
 // ============= 服务健康自检 =============
-// 缓存状态，避免每次请求都探测
 let cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: 0 };
-const HEALTH_CHECK_INTERVAL = 60000; // 60秒缓存
+const HEALTH_CHECK_INTERVAL = 60000;
 
-/**
- * 内部健康检查（动态检测实际使用的音源）
- */
 async function checkServiceHealth() {
     const now = Date.now();
     if (now - cachedHealthStatus.lastCheck < HEALTH_CHECK_INTERVAL) {
         return cachedHealthStatus;
     }
 
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
+    // 依次检查各上游
+    let anyOnline = false;
+    for (const upstream of UPSTREAMS) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5000);
 
-        let res;
-        if (CONFIG.FORCE_FALLBACK) {
-            // 检测主要 API（ygking QQ 音乐）
-            res = await fetch(`${CONFIG.YGKING_API}/api/search?keyword=test&type=song&num=1`, {
+            // 根据上游类型使用对应的检测端点
+            let checkUrl;
+            if (upstream.type === 'lucky') {
+                checkUrl = `${upstream.url}?Love=test`;
+            } else {
+                checkUrl = `${upstream.url}/api/search?keyword=test&num=1`;
+            }
+
+            const res = await fetch(checkUrl, {
                 signal: controller.signal,
                 headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
             });
-        } else {
-            // 检测 TuneHub API
-            res = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/methods`, {
-                signal: controller.signal,
-                headers: {
-                    'User-Agent': 'HBMusic-HealthCheck/1.0',
-                    'X-API-Key': CONFIG.TUNEHUB_API_KEY
-                }
-            });
-        }
-        clearTimeout(timeout);
+            clearTimeout(timeout);
 
-        if (res.ok) {
-            cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: now };
-        } else if (res.status < 500) {
-            // 4xx 错误可能是探测参数问题，但服务本身是活的
-            cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: now };
-        } else {
-            app.log.warn({ code: res.status }, '上游服务响应异常');
-            cachedHealthStatus = { status: 'degraded', text: '服务波动 · 正在修复', color: '#FF9500', lastCheck: now };
+            if (res.ok) {
+                anyOnline = true;
+                break;
+            }
+        } catch (e) {
+            // 继续尝试下一个上游
         }
-    } catch (error) {
-        // 证书过期等连接异常
-        if (error.name === 'AbortError') {
-            app.log.warn('上游服务响应超时');
-            cachedHealthStatus = { status: 'degraded', text: '服务波动 · 响应缓慢', color: '#FF9500', lastCheck: now };
-        } else if (error.message?.includes('certificate') || error.code === 'CERT_HAS_EXPIRED') {
-            // 证书过期，但已开启兼容模式
-            app.log.warn('上游服务证书异常，已开启兼容模式');
-            cachedHealthStatus = { status: 'ok', text: '服务在线 · 兼容模式', color: '#07C160', lastCheck: now };
-        } else {
-            app.log.error({ error: error.message }, '上游服务完全不可用');
-            cachedHealthStatus = { status: 'error', text: '服务维护中', color: '#FF3B30', lastCheck: now };
-        }
+    }
+
+    if (anyOnline) {
+        cachedHealthStatus = { status: 'ok', text: '服务在线 · A1', color: '#07C160', lastCheck: now };
+    } else {
+        cachedHealthStatus = { status: 'error', text: '服务维护中 · B2', color: '#FF3B30', lastCheck: now };
     }
 
     return cachedHealthStatus;
@@ -161,42 +136,445 @@ async function checkServiceHealth() {
 
 // UA 验证中间件
 app.addHook('onRequest', async (request, reply) => {
-    // 跳过非保护路由（健康检查、资源代理等）
-    if (!PROTECTED_ROUTES.includes(request.url.split('?')[0])) {
-        return;
-    }
-
-    // 跳过验证（如果禁用）
-    if (!UA_FILTER_ENABLED) {
-        return;
-    }
+    if (!PROTECTED_ROUTES.includes(request.url.split('?')[0])) return;
+    if (!UA_FILTER_ENABLED) return;
 
     const ua = request.headers['user-agent'] || '';
+    if (ua.includes('MicroMessenger')) return;
 
-    // 如果包含微信标识，直接放行
-    if (ua.includes('MicroMessenger')) {
-        return;
-    }
-
-    // 检测是否为常见浏览器（在黑名单中）
     const isBrowser = BROWSER_BLACKLIST.some(keyword => ua.includes(keyword));
 
     if (isBrowser) {
         request.log.warn({ ua: ua.substring(0, 100) }, '浏览器请求被拒绝');
-
-        // 获取服务状态
         const health = await checkServiceHealth();
-        // 将十六进制色转换为 RGB
-        const hexToRgb = (hex) => {
-            const r = parseInt(hex.slice(1, 3), 16);
-            const g = parseInt(hex.slice(3, 5), 16);
-            const b = parseInt(hex.slice(5, 7), 16);
-            return `${r}, ${g}, ${b}`;
-        };
-        const statusRgb = hexToRgb(health.color);
+        const html = getStatusPageHTML(health);
+        return reply.code(200).type('text/html').send(html);
+    }
+});
 
-        const html = `
-<!DOCTYPE html>
+// ============= 路由 =============
+
+// 健康检查
+app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// 主接口：搜索歌曲
+app.get('/', async (request, reply) => {
+    const name = request.query.name || request.query.hame;
+
+    if (!name) {
+        return reply.code(400).send({
+            code: 400,
+            message: '缺少 name 参数，请使用 ?name=歌曲名 格式请求'
+        });
+    }
+
+    try {
+        const result = await searchAndGetSong(name, request.log);
+        return result;
+    } catch (error) {
+        request.log.error(error, '搜索歌曲失败');
+        return reply.code(500).send({
+            code: 500,
+            message: '服务内部错误: ' + error.message
+        });
+    }
+});
+
+// 兼容 API 路径
+app.get('/api/music/url', async (request, reply) => {
+    const { name, singer } = request.query;
+    if (!name) return reply.code(400).send({ code: 400, message: '缺少 name 参数' });
+
+    const keyword = singer ? `${name} ${singer}` : name;
+    try {
+        return await searchAndGetSong(keyword, request.log);
+    } catch (error) {
+        request.log.error(error, '搜索歌曲失败');
+        return reply.code(500).send({ code: 500, message: error.message });
+    }
+});
+
+// 音频流代理（支持 QQ 音乐 mid、酷我 rid、以及旧版 id 参数）
+app.get('/fallback-stream', async (request, reply) => {
+    const { mid, rid, id } = request.query;
+
+    if (!mid && !rid && !id) {
+        return reply.code(400).send({ error: '缺少 mid、rid 或 id 参数' });
+    }
+
+    // 如果只传了 id（旧格式），尝试通过 qq-music-api-v2 按 songid 获取
+    if (!mid && !rid && id) {
+        for (const upstream of UPSTREAMS.filter(u => u.type === 'qqmusic')) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+                const urlRes = await fetch(`${upstream.url}${upstream.endpoints.url}?id=${id}`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic/1.0' }
+                });
+                clearTimeout(timeout);
+
+                const urlData = await urlRes.json();
+                // 尝试从返回数据中提取播放链接
+                const audioUrl = urlData.data?.[Object.keys(urlData.data || {})[0]];
+
+                if (audioUrl) {
+                    request.log.info({ source: 'qqmusic', id }, '通过 songid 获取播放链接成功');
+                    // 302 重定向到真实播放链接
+                    return reply.redirect(audioUrl);
+                }
+            } catch (e) {
+                request.log.warn({ source: 'qqmusic', id, error: e.message }, '通过 songid 获取链接失败');
+            }
+        }
+
+        // 所有上游都失败，返回 404（非 400，防止客户端死循环重试）
+        return reply.code(404).send({ error: '该歌曲链接已过期，请重新点歌' });
+    }
+
+    let audioUrl = null;
+
+    // 如果是酷我 rid，直接从酷我获取
+    if (rid) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+            const kuwoUrl = `https://kw-api.cenguigui.cn?id=${rid}&type=song&level=exhigh&format=mp3`;
+            const res = await fetch(kuwoUrl, {
+                signal: controller.signal,
+                redirect: 'follow',
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            clearTimeout(timeout);
+
+            // 酷我返回 302 重定向到真实链接
+            if (res.ok || res.redirected) {
+                audioUrl = res.url;
+                request.log.info({ source: 'kuwo', rid }, '获取酷我播放链接成功');
+            }
+        } catch (e) {
+            request.log.warn({ source: 'kuwo', error: e.message }, '酷我获取链接失败');
+        }
+    }
+
+    // 如果是 QQ 音乐 mid，从 QQ 音乐上游获取
+    if (!audioUrl && mid) {
+        for (const upstream of UPSTREAMS.filter(u => u.type === 'qqmusic')) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+                const urlRes = await fetch(`${upstream.url}${upstream.endpoints.url}?mid=${mid}`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic/1.0' }
+                });
+                clearTimeout(timeout);
+
+                const urlData = await urlRes.json();
+                audioUrl = urlData.data?.[mid];
+
+                if (audioUrl) {
+                    request.log.info({ upstream: upstream.name, mid }, '获取播放链接成功');
+                    break;
+                }
+            } catch (e) {
+                request.log.warn({ upstream: upstream.name, error: e.message }, '上游获取链接失败');
+            }
+        }
+    }
+
+    if (!audioUrl) {
+        return reply.code(404).send({ error: '无法获取播放链接' });
+    }
+
+    try {
+        const audioRes = await fetch(audioUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://y.qq.com/' }
+        });
+
+        reply.header('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
+        reply.header('Accept-Ranges', 'bytes');
+        if (audioRes.headers.get('content-length')) {
+            reply.header('Content-Length', audioRes.headers.get('content-length'));
+        }
+        return reply.send(audioRes.body);
+    } catch (error) {
+        request.log.error(error, '音频代理失败');
+        return reply.code(502).send({ error: '音频获取失败' });
+    }
+});
+
+// 歌词代理（支持 QQ 音乐 mid 和 酷我 rid）
+app.get('/fallback-lyric', async (request, reply) => {
+    const { mid, rid } = request.query;
+
+    if (!mid && !rid) {
+        return reply.code(400).send({ error: '缺少 mid 或 rid 参数' });
+    }
+
+    // 如果是酷我 rid，直接从酷我获取
+    if (rid) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+            const kuwoUrl = `https://kw-api.cenguigui.cn?id=${rid}&type=lyr&format=all`;
+            const res = await fetch(kuwoUrl, {
+                signal: controller.signal,
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            clearTimeout(timeout);
+
+            const text = await res.text();
+            if (text) {
+                reply.header('Content-Type', 'text/plain; charset=utf-8');
+                reply.header('Cache-Control', 'public, max-age=86400');
+                return reply.send(text);
+            }
+        } catch (e) {
+            request.log.warn({ source: 'kuwo', error: e.message }, '酷我获取歌词失败');
+        }
+    }
+
+    // 如果是 QQ 音乐 mid，从 QQ 音乐上游获取
+    if (mid) {
+        for (const upstream of UPSTREAMS.filter(u => u.type === 'qqmusic')) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+                const res = await fetch(`${upstream.url}${upstream.endpoints.lyric}?mid=${mid}`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic/1.0' }
+                });
+                clearTimeout(timeout);
+
+                const data = await res.json();
+
+                if (data.code === 0 && data.data?.lyric) {
+                    reply.header('Content-Type', 'text/plain; charset=utf-8');
+                    reply.header('Cache-Control', 'public, max-age=86400');
+                    return reply.send(data.data.lyric);
+                }
+            } catch (e) {
+                request.log.warn({ upstream: upstream.name, error: e.message }, '上游获取歌词失败');
+            }
+        }
+    }
+
+    return reply.code(404).send({ error: '未找到歌词' });
+});
+
+// ============= 核心逻辑 =============
+
+// ============= 搜索结果内存缓存 =============
+// 纯内存缓存，不占磁盘空间，容器重启后自动清空
+const searchCache = new Map();
+const CACHE_TTL = 60 * 60 * 1000;   // 缓存有效期：1 小时
+const CACHE_MAX_SIZE = 200;         // 最大缓存条目数
+
+function getCacheKey(keyword) {
+    return keyword.trim().toLowerCase();
+}
+
+function getFromCache(keyword) {
+    const key = getCacheKey(keyword);
+    const entry = searchCache.get(key);
+    if (!entry) return null;
+
+    // 检查是否过期
+    if (Date.now() - entry.timestamp > CACHE_TTL) {
+        searchCache.delete(key);
+        return null;
+    }
+    return entry.data;
+}
+
+function setCache(keyword, data) {
+    const key = getCacheKey(keyword);
+
+    // 缓存满时淘汰最旧的条目
+    if (searchCache.size >= CACHE_MAX_SIZE) {
+        const oldestKey = searchCache.keys().next().value;
+        searchCache.delete(oldestKey);
+    }
+
+    searchCache.set(key, { data, timestamp: Date.now() });
+}
+
+async function searchAndGetSong(keyword, log) {
+    // 优先查缓存
+    const cached = getFromCache(keyword);
+    if (cached) {
+        log.info({ keyword, title: cached.title }, '命中缓存，跳过上游请求');
+        return cached;
+    }
+
+    log.info({ keyword }, '搜索歌曲...');
+
+    // 依次尝试各上游
+    for (const upstream of UPSTREAMS) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), CONFIG.UPSTREAM_TIMEOUT);
+
+            let result;
+            if (upstream.type === 'lucky') {
+                // Lucky API：直接返回完整结果（含真实播放链接）
+                result = await searchFromLucky(upstream, keyword, controller.signal, log);
+            } else if (upstream.type === 'kuwo') {
+                // 酷我 API：直接返回完整结果
+                result = await searchFromKuwo(upstream, keyword, controller.signal, log);
+            } else {
+                // QQ 音乐格式
+                result = await searchFromQQMusic(upstream, keyword, controller.signal, log);
+            }
+            clearTimeout(timeout);
+
+            if (result) {
+                const finalResult = { ...result, source: upstream.name };
+                log.info({ title: result.title, source: upstream.name }, '搜索成功');
+                // 写入缓存
+                setCache(keyword, finalResult);
+                return finalResult;
+            }
+        } catch (e) {
+            log.warn({ upstream: upstream.name, error: e.message }, '上游请求失败，尝试下一个');
+        }
+    }
+
+    throw new Error('所有上游均不可用');
+}
+
+// QQ 音乐格式适配器
+async function searchFromQQMusic(upstream, keyword, signal, log) {
+    const searchUrl = `${upstream.url}${upstream.endpoints.search}?keyword=${encodeURIComponent(keyword)}&num=1`;
+    const searchRes = await fetch(searchUrl, {
+        signal,
+        headers: { 'User-Agent': 'HBMusic/1.0' }
+    });
+    const searchData = await searchRes.json();
+
+    if (searchData.code !== 0 || !searchData.data?.list?.length) {
+        return null;
+    }
+
+    const song = searchData.data.list[0];
+    const mid = song.mid;
+    const songName = song.name || '未知歌曲';
+    const artistName = (song.singer || []).map(s => s.name).join('/') || '未知歌手';
+    const album = song.album || {};
+
+    return {
+        code: 200,
+        title: songName,
+        singer: artistName,
+        cover: album.mid ? `https://y.qq.com/music/photo_new/T002R300x300M000${album.mid}.jpg` : '',
+        link: `https://y.qq.com/n/ryqq/songDetail/${mid}`,
+        music_url: `${CONFIG.BASE_URL}/fallback-stream?mid=${mid}`,
+        lyric: `${CONFIG.BASE_URL}/fallback-lyric?mid=${mid}`,
+    };
+}
+
+// Lucky API 适配器 - 直接返回真实播放链接
+async function searchFromLucky(upstream, keyword, signal, log) {
+    const searchUrl = `${upstream.url}?Love=${encodeURIComponent(keyword)}`;
+    const searchRes = await fetch(searchUrl, {
+        signal,
+        headers: { 'User-Agent': 'HBMusic/1.0' }
+    });
+    const data = await searchRes.json();
+
+    if (data.code !== 200 || !data.music_url) {
+        return null;
+    }
+
+    // 从歌词中解析真实歌名和歌手（歌词格式：[ti:歌名] [ar:歌手]）
+    let title = keyword;
+    let singer = '未知歌手';
+    let cleanLyric = '';
+    if (data.lyric) {
+        const titleMatch = data.lyric.match(/\[ti:([^\]]+)\]/);
+        const artistMatch = data.lyric.match(/\[ar:([^\]]+)\]/);
+        if (titleMatch) title = titleMatch[1];
+        if (artistMatch) singer = artistMatch[1];
+
+        // 过滤歌词中的广告行（包含 Lucky签、cer.luckying.love、点歌接口 等关键词）
+        cleanLyric = data.lyric
+            .split('\n')
+            .filter(line => !line.includes('Lucky签') && !line.includes('cer.luckying.love') && !line.includes('点歌接口'))
+            .join('\n');
+    }
+
+    return {
+        code: 200,
+        title,
+        singer,
+        cover: data.cover || '',
+        link: data.link || '',
+        music_url: data.music_url,  // 直接使用真实链接，无需代理
+        lyric: cleanLyric,
+    };
+}
+
+// 酷我 API 适配器（暂时禁用）
+async function searchFromKuwo(upstream, keyword, signal, log) {
+    const searchUrl = `${upstream.url}?name=${encodeURIComponent(keyword)}&page=1&limit=1`;
+    const searchRes = await fetch(searchUrl, {
+        signal,
+        headers: { 'User-Agent': 'HBMusic/1.0' }
+    });
+    const searchData = await searchRes.json();
+
+    if (searchData.code !== 200 || !searchData.data?.length) {
+        return null;
+    }
+
+    const song = searchData.data[0];
+
+    return {
+        code: 200,
+        title: song.name || '未知歌曲',
+        singer: song.artist || '未知歌手',
+        cover: song.pic || '',
+        link: `https://www.kuwo.cn/play_detail/${song.rid}`,
+        music_url: `${CONFIG.BASE_URL}/fallback-stream?rid=${song.rid}`,
+        lyric: `${CONFIG.BASE_URL}/fallback-lyric?rid=${song.rid}`,
+    };
+}
+
+async function fetchWithRetry(url, options = {}) {
+    let lastError;
+    for (let i = 0; i <= CONFIG.MAX_RETRIES; i++) {
+        try {
+            const res = await fetch(url, {
+                ...options,
+                headers: { 'User-Agent': 'Mozilla/5.0', ...options.headers }
+            });
+            if (res.status >= 500) throw new Error(`Server Error: ${res.status}`);
+            return res;
+        } catch (error) {
+            lastError = error;
+            if (i < CONFIG.MAX_RETRIES) await new Promise(r => setTimeout(r, 200 * (i + 1)));
+        }
+    }
+    throw lastError;
+}
+
+// ============= 完整前端状态页 =============
+
+function getStatusPageHTML(health) {
+    const hexToRgb = (hex) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `${r}, ${g}, ${b}`;
+    };
+    const statusRgb = hexToRgb(health.color);
+
+    return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -209,13 +587,12 @@ app.addHook('onRequest', async (request, reply) => {
             font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; 
             background: linear-gradient(135deg, #e0f7e9 0%, #f0f4f8 50%, #e8f4f8 100%);
             min-height: 100vh; 
-            /* 使用 min-content 确保 body 高度能被卡片撑开 */
             height: auto;
             display: flex; 
             flex-direction: column;
             align-items: center; 
             justify-content: flex-start;
-            padding: 40px 20px 100px; /* 增加底部 padding 防止遮挡波纹 */
+            padding: 40px 20px 100px;
             color: #333;
             position: relative;
             -webkit-overflow-scrolling: touch;
@@ -232,13 +609,13 @@ app.addHook('onRequest', async (request, reply) => {
             100% { transform: translate(-50px, 150px) rotate(180deg) scale(0.9); }
         }
         
-        /* 动态波纹背景 - 强制固定在视口最底部 */
+        /* 动态波纹背景 */
         .waves { 
             position: fixed; 
             bottom: 0; 
             left: 0; 
             width: 100%; 
-            height: 25vh; /* 缩小高度，避免在移动端太突兀 */
+            height: 25vh;
             pointer-events: none; 
             z-index: 0; 
         }
@@ -254,7 +631,6 @@ app.addHook('onRequest', async (request, reply) => {
             backdrop-filter: blur(15px); 
             -webkit-backdrop-filter: blur(15px);
             width: 100%; max-width: 400px; padding: 32px; border-radius: 28px; 
-            /* 内发光与外阴影结合 */
             box-shadow: 
                 0 15px 45px rgba(7, 193, 96, 0.1),
                 inset 0 0 0 1px rgba(255, 255, 255, 0.6); 
@@ -263,14 +639,11 @@ app.addHook('onRequest', async (request, reply) => {
             z-index: 10;
             border: 1px solid rgba(255,255,255,0.4);
             margin-bottom: 20px;
-            /* 进场动画 */
             opacity: 0;
             transform: translateY(30px) scale(0.95);
             animation: cardPop 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) 0.2s forwards;
         }
-        @keyframes cardPop {
-            to { opacity: 1; transform: translateY(0) scale(1); }
-        }
+        @keyframes cardPop { to { opacity: 1; transform: translateY(0) scale(1); } }
         .logo { width: 72px; height: 72px; background: var(--wechat-green); border-radius: 20px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; color: white; font-size: 36px; font-weight: bold; box-shadow: 0 8px 25px rgba(7, 193, 96, 0.3); }
         h1 { font-size: 26px; margin: 0 0 8px; font-weight: 700; color: #1a1a1a; }
         .subtitle { color: #666; font-size: 15px; margin-bottom: 24px; }
@@ -303,9 +676,7 @@ app.addHook('onRequest', async (request, reply) => {
             font-size: 13px; color: #666; line-height: 1.8; text-align: left;
             background: rgba(255, 255, 255, 0.5); border-radius: 12px; padding: 0 14px;
         }
-        .help-content.show {
-            max-height: 200px; opacity: 1; margin-top: 12px; padding: 14px;
-        }
+        .help-content.show { max-height: 200px; opacity: 1; margin-top: 12px; padding: 14px; }
         .help-content p { margin: 0 0 8px; }
         .help-content p:last-child { margin: 0; }
         .help-content .highlight { color: var(--wechat-green); font-weight: 600; }
@@ -315,7 +686,7 @@ app.addHook('onRequest', async (request, reply) => {
         .url-box { margin-top: 18px; font-family: 'SF Mono', 'Roboto Mono', monospace; font-size: 12px; background: rgba(255, 255, 255, 0.6); padding: 14px; border-radius: 14px; border: 1px solid rgba(0,0,0,0.05); word-break: break-all; color: var(--wechat-green); font-weight: 600; cursor: pointer; transition: all 0.2s; }
         .url-box:hover { background: rgba(255, 255, 255, 0.8); }
         
-        /* 复制成功 Toast - 趣味动画版 */
+        /* 复制成功 Toast */
         #toast { 
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.8); 
             background: white; color: #333; padding: 30px 40px; border-radius: 16px; 
@@ -347,9 +718,161 @@ app.addHook('onRequest', async (request, reply) => {
         @keyframes fill { 100% { box-shadow: inset 0px 0px 0px 30px var(--wechat-green); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+        
+        /* 公告横幅 */
+        .announcement-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(90deg, #FF9500 0%, #FF6B00 100%);
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 500;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(255, 149, 0, 0.3);
+            animation: slideDown 0.5s ease-out;
+        }
+        .announcement-bar .icon { margin-right: 8px; }
+        .announcement-bar .highlight { font-weight: 700; }
+
+        /* 通知铃铛 */
+        .notification-bell {
+            position: fixed; top: 20px; right: 20px;
+            width: 44px; height: 44px;
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px;
+            cursor: pointer;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1001;
+        }
+        .notification-bell:hover { transform: scale(1.1) rotate(10deg); background: rgba(255, 255, 255, 0.4); }
+        .notification-bell .dot {
+            position: absolute; top: 10px; right: 10px;
+            width: 8px; height: 8px;
+            background: #FF3B30;
+            border-radius: 50%;
+            border: 1px solid #fff;
+            box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7);
+            animation: pulse-red 2s infinite;
+            display: none; /* 默认隐藏 */
+        }
+        .notification-bell.has-new .dot { display: block; }
+
+        /* 更新弹窗 */
+        .modal-backdrop {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            z-index: 2000;
+            display: flex; align-items: center; justify-content: center;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.4s ease;
+        }
+        .modal-backdrop.show { opacity: 1; pointer-events: auto; }
+        
+        .update-modal {
+            width: 90%; max-width: 360px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 24px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.15), inset 0 0 0 1px rgba(255, 255, 255, 0.8);
+            transform: scale(0.9) translateY(20px);
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            text-align: left;
+        }
+        .modal-backdrop.show .update-modal { transform: scale(1) translateY(0); }
+        
+        .modal-header { text-align: center; margin-bottom: 20px; }
+        .modal-emoji { font-size: 48px; margin-bottom: 12px; display: block; animation: bounce 2s infinite; }
+        .modal-title { font-size: 20px; font-weight: 800; color: #1a1a1a; margin-bottom: 4px; }
+        .modal-subtitle { font-size: 13px; color: #666; }
+        
+        .update-list { margin-bottom: 24px; }
+        .update-item { 
+            display: flex; align-items: flex-start; margin-bottom: 12px; 
+            font-size: 14px; color: #333; line-height: 1.5;
+            background: rgba(0,0,0,0.03); padding: 10px; border-radius: 12px;
+        }
+        .update-item:last-child { margin-bottom: 0; }
+        .update-tag { 
+            font-size: 11px; padding: 2px 6px; border-radius: 6px; 
+            margin-right: 8px; font-weight: 700; flex-shrink: 0; margin-top: 2px;
+        }
+        .tag-new { background: #e0f2f1; color: #00897b; }
+        .tag-vip { background: #fff8e1; color: #ff8f00; }
+        .tag-fix { background: #ffebee; color: #c62828; }
+        .tag-opt { background: #e3f2fd; color: #1565c0; }
+        
+        .modal-btn {
+            display: block; width: 100%;
+            background: var(--wechat-green); color: white;
+            font-size: 15px; font-weight: 700;
+            padding: 14px; border-radius: 16px;
+            border: none; cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 15px rgba(7, 193, 96, 0.3);
+        }
+        .modal-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(7, 193, 96, 0.4); }
+        .modal-btn:active { transform: scale(0.98); }
+
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7); } 70% { box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); } }
+        @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+        @keyframes slideDown { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+        body.has-announcement { padding-top: 50px; }
     </style>
 </head>
-<body>
+<body class="${CONFIG.SHOW_ANNOUNCEMENT ? 'has-announcement' : ''}">
+    <!-- 服务公告（通过 SHOW_ANNOUNCEMENT 环境变量控制） -->
+    ${CONFIG.SHOW_ANNOUNCEMENT ? `
+    <div class="announcement-bar">
+        <span class="icon">🔧</span>
+        <span>${CONFIG.ANNOUNCEMENT_TEXT}</span>
+    </div>` : ''}
+    
+    <!-- 通知铃铛 -->
+    <div class="notification-bell" id="bell" onclick="showUpdateModal()">
+        🔔
+        <div class="dot"></div>
+    </div>
+    
+    <!-- 更新弹窗 -->
+    <div class="modal-backdrop" id="updateModal">
+        <div class="update-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <span class="modal-emoji">🎉</span>
+                <div class="modal-title">发现新版本</div>
+                <div class="modal-subtitle">HBMusic 服务已自动升级</div>
+            </div>
+            
+            <div class="update-list">
+                <div class="update-item">
+                    <span class="update-tag tag-vip">VIP</span>
+                    <span><b>全链路权益解锁</b><br>支持无损音质及 VIP 专享曲目点播</span>
+                </div>
+                <div class="update-item">
+                    <span class="update-tag tag-opt">PRO</span>
+                    <span><b>沉浸式视听体验</b><br>重构歌词渲染引擎，界面纯净无扰</span>
+                </div>
+                <div class="update-item">
+                    <span class="update-tag tag-new">NEW</span>
+                    <span><b>高性能解析内核</b><br>多节点智能路由，响应延迟降低 30%</span>
+                </div>
+            </div>
+            
+            <button class="modal-btn" onclick="closeUpdateModal()">立即体验</button>
+        </div>
+    </div>
+
     <!-- 背景流光 -->
     <div class="blobs">
         <div class="blob blob-1"></div>
@@ -387,6 +910,8 @@ app.addHook('onRequest', async (request, reply) => {
             </div>
         </div>
 
+
+
         <div class="status-box">
             <div class="status-badge">
                 <div class="status-dot"></div>
@@ -409,7 +934,7 @@ app.addHook('onRequest', async (request, reply) => {
         </div>
     </div>
 
-    <!-- Toast 弹窗 - 趣味动画版 -->
+    <!-- Toast 弹窗 -->
     <div id="toast">
         <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
             <circle class="checkmark-circle" cx="26" cy="26" r="25" fill="none"/>
@@ -420,6 +945,41 @@ app.addHook('onRequest', async (request, reply) => {
     </div>
 
     <script>
+        // 版本号 - 每次更新修改此值，会自动弹出提示
+        const CURRENT_VERSION = '2026.02.07';
+
+        function checkUpdate() {
+            const savedVersion = localStorage.getItem('hbmusic_version');
+            const bell = document.getElementById('bell');
+            
+            if (savedVersion !== CURRENT_VERSION) {
+                // 有新版本：显示红点，自动弹窗
+                bell.classList.add('has-new');
+                setTimeout(() => {
+                    showUpdateModal();
+                }, 800); // 延迟一点弹出，体验更好
+            } else {
+                bell.classList.remove('has-new');
+            }
+        }
+
+        function showUpdateModal() {
+            const modal = document.getElementById('updateModal');
+            modal.classList.add('show');
+        }
+
+        function closeUpdateModal() {
+            const modal = document.getElementById('updateModal');
+            modal.classList.remove('show');
+            
+            // 标记已读
+            localStorage.setItem('hbmusic_version', CURRENT_VERSION);
+            document.getElementById('bell').classList.remove('has-new');
+        }
+
+        // 加载时检查
+        window.addEventListener('load', checkUpdate);
+
         function copyUrl() {
             const url = document.getElementById('apiUrl').innerText;
             navigator.clipboard.writeText(url).then(() => {
@@ -440,594 +1000,6 @@ app.addHook('onRequest', async (request, reply) => {
     <script id="chatway" async="true" src="https://cdn.chatway.app/widget.js?id=i5GVIcMxReNp"></script>
 </body>
 </html>`;
-
-        return reply.code(200).type('text/html').send(html);
-    }
-
-    // 其他客户端（如 CFNetwork/Calculator 等原生 HTTP 客户端）放行
-});
-
-// ============= 路由 =============
-
-// 健康检查
-app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
-
-// 主接口：搜索歌曲
-app.get('/', async (request, reply) => {
-    // 增加对 'hame' 的容错处理，防止傻逼打错字
-    const name = request.query.name || request.query.hame;
-
-    if (!name) {
-        return reply.code(400).send({
-            code: 400,
-            message: '缺少 name 参数，请使用 ?name=歌曲名 格式请求'
-        });
-    }
-
-    try {
-        const result = await searchAndGetSongInfo(name, request.log);
-        return result;
-    } catch (error) {
-        request.log.error(error, '搜索歌曲失败');
-        return reply.code(500).send({
-            code: 500,
-            message: '服务内部错误: ' + error.message
-        });
-    }
-});
-
-// 音频流代理（使用 V3 API 解析）
-app.get('/stream', async (request, reply) => {
-    const { source, id, br } = request.query;
-
-    if (!source || !id) {
-        return reply.code(400).send({ error: '缺少 source 或 id 参数' });
-    }
-
-    const bitrate = br || CONFIG.BITRATE;
-
-    try {
-        // 调用 V3 解析接口获取音频 URL（消耗积分）
-        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': CONFIG.TUNEHUB_API_KEY
-            },
-            body: JSON.stringify({
-                platform: source,
-                ids: String(id),
-                quality: bitrate
-            })
-        });
-
-        if (!parseRes.ok) {
-            return reply.code(502).send({ error: '解析失败' });
-        }
-
-        const parseData = await parseRes.json();
-        // V3 API 返回嵌套结构
-        const songs = parseData.data?.data;
-        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
-            return reply.code(404).send({ error: '未找到音频' });
-        }
-
-        const audioUrl = songs[0].url;
-        if (!audioUrl) {
-            return reply.code(404).send({ error: '音频链接不可用' });
-        }
-
-        // 请求真实音频并转发
-        const headers = {};
-        if (request.headers.range) {
-            headers['Range'] = request.headers.range;
-        }
-        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-
-        // 对网易云添加 Referer
-        if (source === 'netease') {
-            headers['Referer'] = 'https://music.163.com/';
-        }
-
-        const audioRes = await fetch(audioUrl, { headers });
-
-        // 设置响应头
-        reply.header('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
-        reply.header('Accept-Ranges', 'bytes');
-
-        if (audioRes.headers.get('content-length')) {
-            reply.header('Content-Length', audioRes.headers.get('content-length'));
-        }
-        if (audioRes.headers.get('content-range')) {
-            reply.header('Content-Range', audioRes.headers.get('content-range'));
-        }
-
-        reply.code(audioRes.status);
-        return reply.send(audioRes.body);
-
-    } catch (error) {
-        request.log.error(error, '音频代理失败');
-        return reply.code(502).send({ error: '音频获取失败' });
-    }
-});
-
-// 封面代理（使用 V3 API 解析获取封面 URL）
-app.get('/cover', async (request, reply) => {
-    const { source, id } = request.query;
-
-    if (!source || !id) {
-        return reply.code(400).send({ error: '缺少参数' });
-    }
-
-    try {
-        // 调用 V3 解析接口获取封面
-        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': CONFIG.TUNEHUB_API_KEY
-            },
-            body: JSON.stringify({
-                platform: source,
-                ids: String(id),
-                quality: CONFIG.BITRATE
-            })
-        });
-
-        if (!parseRes.ok) {
-            return reply.code(502).send({ error: '解析失败' });
-        }
-
-        const parseData = await parseRes.json();
-        // V3 API 返回嵌套结构
-        const songs = parseData.data?.data;
-        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
-            return reply.code(404).send({ error: '未找到封面' });
-        }
-
-        const coverUrl = songs[0].cover;
-        if (!coverUrl) {
-            return reply.code(404).send({ error: '封面链接不可用' });
-        }
-
-        // 代理封面图片
-        const res = await fetch(coverUrl, { redirect: 'follow' });
-        reply.header('Content-Type', res.headers.get('content-type') || 'image/jpeg');
-        reply.header('Cache-Control', 'public, max-age=86400');
-        return reply.send(res.body);
-    } catch (error) {
-        return reply.code(502).send({ error: '封面获取失败' });
-    }
-});
-
-// 歌词代理（使用 V3 API 解析获取歌词 URL）
-app.get('/lyric', async (request, reply) => {
-    const { source, id } = request.query;
-
-    if (!source || !id) {
-        return reply.code(400).send({ error: '缺少参数' });
-    }
-
-    try {
-        // 调用 V3 解析接口获取歌词
-        const parseRes = await fetch(`${CONFIG.TUNEHUB_BASE}/v1/parse`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': CONFIG.TUNEHUB_API_KEY
-            },
-            body: JSON.stringify({
-                platform: source,
-                ids: String(id),
-                quality: CONFIG.BITRATE
-            })
-        });
-
-        if (!parseRes.ok) {
-            return reply.code(502).send({ error: '解析失败' });
-        }
-
-        const parseData = await parseRes.json();
-        // V3 API 返回嵌套结构
-        const songs = parseData.data?.data;
-        if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
-            return reply.code(404).send({ error: '未找到歌词' });
-        }
-
-        const lrcUrl = songs[0].lyrics;
-        if (!lrcUrl) {
-            return reply.code(404).send({ error: '歌词不可用' });
-        }
-
-        // 获取歌词内容
-        const res = await fetch(lrcUrl, { redirect: 'follow' });
-        const lrcText = await res.text();
-        reply.header('Content-Type', 'text/plain; charset=utf-8');
-        reply.header('Cache-Control', 'public, max-age=86400');
-        return reply.send(lrcText);
-    } catch (error) {
-        return reply.code(502).send({ error: '歌词获取失败' });
-    }
-});
-
-// ============= 主要 API 代理端点（ygking QQ 音乐）=============
-
-// 音频流代理
-app.get('/fallback-stream', async (request, reply) => {
-    const { mid } = request.query;
-
-    if (!mid) {
-        return reply.code(400).send({ error: '缺少 mid 参数' });
-    }
-
-    try {
-        // 通过 ygking API 获取播放链接
-        const urlRes = await fetch(`${CONFIG.YGKING_API}/api/song/url?mid=${mid}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-        });
-
-        if (!urlRes.ok) {
-            return reply.code(502).send({ error: '音频链接获取失败' });
-        }
-
-        const urlData = await urlRes.json();
-        if (urlData.code !== 0 || !urlData.data?.[mid]) {
-            return reply.code(404).send({ error: '未找到音频链接' });
-        }
-
-        const audioUrl = urlData.data[mid];
-
-        // 请求真实音频并转发
-        const audioRes = await fetch(audioUrl, {
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://y.qq.com/'
-            }
-        });
-
-        if (!audioRes.ok) {
-            return reply.code(502).send({ error: '音频获取失败' });
-        }
-
-        // 转发响应
-        reply.header('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
-        reply.header('Accept-Ranges', 'bytes');
-        if (audioRes.headers.get('content-length')) {
-            reply.header('Content-Length', audioRes.headers.get('content-length'));
-        }
-
-        return reply.send(audioRes.body);
-    } catch (error) {
-        request.log.error(error, 'ygking 音频代理失败');
-        return reply.code(502).send({ error: '音频获取失败' });
-    }
-});
-
-// 歌词代理
-app.get('/fallback-lyric', async (request, reply) => {
-    const { mid } = request.query;
-
-    if (!mid) {
-        return reply.code(400).send({ error: '缺少 mid 参数' });
-    }
-
-    try {
-        // 通过 ygking API 获取歌词
-        const res = await fetch(`${CONFIG.YGKING_API}/api/lyric?mid=${mid}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-
-        if (!res.ok) {
-            return reply.code(502).send({ error: '歌词获取失败' });
-        }
-
-        const lyricData = await res.json();
-        if (lyricData.code !== 0 || !lyricData.data?.lyric) {
-            return reply.code(404).send({ error: '未找到歌词' });
-        }
-
-        const lrcText = lyricData.data.lyric;
-        reply.header('Content-Type', 'text/plain; charset=utf-8');
-        reply.header('Cache-Control', 'public, max-age=86400');
-        return reply.send(lrcText);
-    } catch (error) {
-        return reply.code(502).send({ error: '歌词获取失败' });
-    }
-});
-
-
-// ============= 核心逻辑 =============
-
-/**
- * 搜索歌曲并获取完整信息
- * 优先使用 TuneHub API，积分不足或失败时降级到备用 API
- */
-async function searchAndGetSongInfo(keyword, log) {
-    // 强制使用备用 API（手动切换开关）
-    if (CONFIG.FORCE_FALLBACK) {
-        log.info({ keyword }, '强制使用备用 API (FORCE_FALLBACK=true)');
-        try {
-            const fallbackResult = await tryKuwoFallbackAPI(keyword, log);
-            if (fallbackResult) {
-                log.info({ title: fallbackResult.title }, '备用 API 获取成功');
-                return fallbackResult;
-            }
-        } catch (fallbackError) {
-            log.error({ error: fallbackError.message }, '备用 API 失败');
-            return { code: 500, message: '备用 API 失败: ' + fallbackError.message };
-        }
-    }
-
-    let lastError = null;
-    let shouldFallback = false;
-
-    // 优先尝试 TuneHub API（消耗积分）
-    for (const source of CONFIG.SOURCE_PRIORITY) {
-        try {
-            const result = await tryGetSongFromSource(keyword, source, log);
-            if (result) {
-                log.info({ source, title: result.title }, '获取歌曲成功 (TuneHub)');
-                return result;
-            }
-        } catch (error) {
-            lastError = error;
-            // 积分不足 (403/402) 或服务不可用时，标记需要降级
-            if (error.message?.includes('403') || error.message?.includes('402') || error.message?.includes('积分')) {
-                log.warn({ source, error: error.message }, 'TuneHub 积分不足，准备降级到备用 API');
-                shouldFallback = true;
-                break;
-            }
-            log.warn({ source, error: error.message }, '音源搜索失败，尝试下一个');
-            continue;
-        }
-    }
-
-    // 降级到备用 API（免费，无需积分）
-    if (shouldFallback || lastError) {
-        try {
-            log.info({ keyword }, '尝试备用 API (kw-api.cenguigui.cn)');
-            const fallbackResult = await tryKuwoFallbackAPI(keyword, log);
-            if (fallbackResult) {
-                log.info({ title: fallbackResult.title }, '备用 API 获取成功');
-                return fallbackResult;
-            }
-        } catch (fallbackError) {
-            log.error({ error: fallbackError.message }, '备用 API 也失败了');
-        }
-    }
-
-    return { code: 404, message: `未找到歌曲: ${keyword}` };
-}
-
-/**
- * 从指定音源获取歌曲 (TuneHub V3 API)
- * 搜索使用方法下发模式（免费），解析使用 POST /v1/parse（消耗积分）
- */
-async function tryGetSongFromSource(keyword, source, log) {
-    // Step 1: 获取搜索方法配置（免费）
-    const methodUrl = `${CONFIG.TUNEHUB_BASE}/v1/methods/${source}/search`;
-    const methodRes = await fetchWithRetry(methodUrl, {
-        headers: { 'X-API-Key': CONFIG.TUNEHUB_API_KEY }
-    });
-
-    if (!methodRes.ok) throw new Error(`获取搜索配置失败: ${methodRes.status}`);
-
-    const methodData = await methodRes.json();
-    if (methodData.code !== 0 || !methodData.data) {
-        throw new Error('搜索配置无效');
-    }
-
-    const searchConfig = methodData.data;
-
-    // Step 2: 替换模板变量并发起搜索请求（免费，直接请求上游）
-    const searchParams = {};
-    for (const [key, value] of Object.entries(searchConfig.params || {})) {
-        // 替换所有模板变量 {{xxx}}
-        let paramValue = String(value);
-        paramValue = paramValue.replace(/\{\{keyword\}\}/gi, keyword);
-        paramValue = paramValue.replace(/\{\{.*?page.*?\}\}/gi, '0');
-        paramValue = paramValue.replace(/\{\{.*?limit.*?\}\}/gi, '10');
-        paramValue = paramValue.replace(/\{\{.*?\}\}/g, ''); // 清理未知变量
-        searchParams[key] = paramValue;
-    }
-
-    const searchUrl = new URL(searchConfig.url);
-    searchUrl.search = new URLSearchParams(searchParams).toString();
-
-    const searchRes = await fetch(searchUrl.toString(), {
-        method: searchConfig.method || 'GET',
-        headers: searchConfig.headers || {}
-    });
-
-    if (!searchRes.ok) throw new Error(`搜索失败: ${searchRes.status}`);
-
-    // Step 3: 解析搜索结果（根据平台不同，响应格式不同）
-    const searchText = await searchRes.text();
-    const songId = extractSongId(searchText, source, log);
-
-    if (!songId) {
-        return null;
-    }
-
-    // Step 4: 调用解析接口获取播放链接（消耗积分）
-    const parseUrl = `${CONFIG.TUNEHUB_BASE}/v1/parse`;
-    const parseRes = await fetchWithRetry(parseUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': CONFIG.TUNEHUB_API_KEY
-        },
-        body: JSON.stringify({
-            platform: source,
-            ids: String(songId),
-            quality: CONFIG.BITRATE
-        })
-    });
-
-    if (!parseRes.ok) throw new Error(`解析失败: ${parseRes.status}`);
-
-    const parseData = await parseRes.json();
-    // V3 API 返回嵌套结构: { data: { data: [...] } }
-    const songs = parseData.data?.data;
-    if (parseData.code !== 0 || !songs?.length || !songs[0].success) {
-        throw new Error('解析歌曲失败');
-    }
-
-    const song = songs[0];
-    const info = song.info || {};
-
-    // 构建响应
-    const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
-
-    return {
-        code: 200,
-        title: info.name || '未知歌曲',
-        singer: info.artist || '未知歌手',
-        cover: song.cover || '',
-        link: getDetailPageLink(source, songId),
-        music_url: song.url || `${baseUrl}/stream?source=${source}&id=${songId}&br=${CONFIG.BITRATE}`,
-        lyric: song.lyrics || `${baseUrl}/lyric?source=${source}&id=${songId}`,
-        source
-    };
-}
-
-/**
- * 从搜索响应中提取歌曲 ID（不同平台格式不同）
- */
-function extractSongId(responseText, source, log) {
-    try {
-        const data = JSON.parse(responseText);
-
-        if (source === 'kuwo') {
-            // 酷我返回 JSON 格式: abslist[0].MUSICRID = "MUSIC_123456" 或 DC_TARGETID
-            const song = data.abslist?.[0];
-            if (!song) return null;
-
-            // 优先使用 DC_TARGETID，否则从 MUSICRID 提取
-            if (song.DC_TARGETID) return song.DC_TARGETID;
-            if (song.MUSICRID) {
-                const match = song.MUSICRID.match(/MUSIC_(\d+)/);
-                return match ? match[1] : null;
-            }
-            return null;
-        }
-
-        if (source === 'netease') {
-            // 网易云: result.songs[0].id
-            return data.result?.songs?.[0]?.id;
-        }
-
-        if (source === 'qq') {
-            // QQ音乐: data.song.list[0].songmid
-            return data.data?.song?.list?.[0]?.songmid;
-        }
-
-        return null;
-    } catch (e) {
-        log.warn({ error: e.message, source }, '解析搜索结果失败');
-        return null;
-    }
-}
-
-/**
- * 主要 API：使用 ygking QQ 音乐 API（免费，支持 VIP 歌曲）
- * Step 1: 搜索歌曲获取 mid
- * Step 2: 返回代理端点 URL
- */
-async function tryYgkingAPI(keyword, log) {
-    // Step 1: 搜索歌曲
-    const searchUrl = `${CONFIG.YGKING_API}/api/search?keyword=${encodeURIComponent(keyword)}&type=song&num=1`;
-
-    log.info({ keyword }, 'ygking API: 正在搜索歌曲...');
-
-    const searchRes = await fetchWithRetry(searchUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-    });
-
-    if (!searchRes.ok) {
-        throw new Error(`ygking 搜索 API 请求失败: ${searchRes.status}`);
-    }
-
-    const searchData = await searchRes.json();
-
-    if (searchData.code !== 0 || !searchData.data?.list?.length) {
-        throw new Error('ygking API 未找到歌曲');
-    }
-
-    const firstSong = searchData.data.list[0];
-    const mid = firstSong.mid;
-
-    if (!mid) {
-        throw new Error('无法获取歌曲 mid');
-    }
-
-    // 提取歌曲信息
-    const songName = firstSong.name || firstSong.title || '未知歌曲';
-    const singers = firstSong.singer || [];
-    const artistName = singers.map(s => s.name).join('/') || '未知歌手';
-    const album = firstSong.album || {};
-
-    log.info({ mid, songName, artistName }, 'ygking API: 搜索成功');
-
-    const baseUrl = process.env.BASE_URL || `http://localhost:${CONFIG.PORT}`;
-
-    return {
-        code: 200,
-        title: songName,
-        singer: artistName,
-        cover: album.mid ? `https://y.qq.com/music/photo_new/T002R300x300M000${album.mid}.jpg` : '',
-        link: `https://y.qq.com/n/ryqq/songDetail/${mid}`,
-        // 使用代理端点，传递 mid 参数
-        music_url: `${baseUrl}/fallback-stream?mid=${mid}`,
-        lyric: `${baseUrl}/fallback-lyric?mid=${mid}`,
-        source: 'ygking-qq'
-    };
-}
-
-// 保持向后兼容的别名
-const tryKuwoFallbackAPI = tryYgkingAPI;
-
-
-/**
- * 生成详情页链接
- */
-function getDetailPageLink(source, id) {
-    const links = {
-        kuwo: `https://www.kuwo.cn/play_detail/${id}`,
-        netease: `https://music.163.com/#/song?id=${id}`,
-        qq: `https://y.qq.com/n/ryqq/songDetail/${id}`
-    };
-    return links[source] || '';
-}
-
-/**
- * 带重试的 fetch
- */
-async function fetchWithRetry(url, options = {}) {
-    let lastError;
-
-    for (let i = 0; i <= CONFIG.MAX_RETRIES; i++) {
-        try {
-            const res = await fetch(url, {
-                ...options,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    ...options.headers
-                }
-            });
-
-            if (res.status >= 500) throw new Error(`Server Error: ${res.status}`);
-            return res;
-        } catch (error) {
-            lastError = error;
-            if (i < CONFIG.MAX_RETRIES) {
-                await new Promise(r => setTimeout(r, 200 * (i + 1)));
-            }
-        }
-    }
-
-    throw lastError;
 }
 
 // ============= 启动服务 =============
@@ -1038,8 +1010,7 @@ try {
 ║          🎵 HBMusic 点歌服务已启动                ║
 ╠═══════════════════════════════════════════════════╣
 ║  地址: http://${CONFIG.HOST}:${CONFIG.PORT}
-║  音源: ${CONFIG.SOURCE_PRIORITY.join(' > ')}
-║  音质: ${CONFIG.BITRATE}
+║  上游: ${CONFIG.QQMUSIC_API}
 ╚═══════════════════════════════════════════════════╝
   `);
 } catch (err) {
