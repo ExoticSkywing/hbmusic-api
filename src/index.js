@@ -676,7 +676,7 @@ function getStatusPageHTML(health) {
             font-size: 13px; color: #666; line-height: 1.8; text-align: left;
             background: rgba(255, 255, 255, 0.5); border-radius: 12px; padding: 0 14px;
         }
-        .help-content.show { max-height: 200px; opacity: 1; margin-top: 12px; padding: 14px; }
+        .help-content.show { max-height: 500px; opacity: 1; margin-top: 12px; padding: 14px; }
         .help-content p { margin: 0 0 8px; }
         .help-content p:last-child { margin: 0; }
         .help-content .highlight { color: var(--wechat-green); font-weight: 600; }
