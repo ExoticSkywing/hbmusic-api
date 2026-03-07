@@ -13,17 +13,14 @@ services:
       # 部署域名（生产环境必须修改）
       - BASE_URL=https://hbmusic.1yo.cc
 
-      # QQ 音乐 API V2（唯一上游）
-      - QQMUSIC_VIP_API=http://qq-music-api-v2:18200
+      # 网易云音源（Meting API，内置 VIP Cookie）
+      - METING_API=https://v.iarc.top
 
       # 请求重试次数
       - MAX_RETRIES=2
 
       # 日志级别
       - LOG_LEVEL=info
-
-    networks:
-      - music-network
 
     deploy:
       resources:
@@ -40,7 +37,3 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-
-networks:
-  music-network:
-    external: true

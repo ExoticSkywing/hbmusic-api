@@ -2,12 +2,13 @@
  * HBMusic - 微信点歌插件后端服务
  * 
  * 多上游架构：支持降级兜底
- * - 主上游: qqmusicapi.1yo.cc (Cloudflare Workers)
- * - 备用上游: qq-music-api-v2 (本地服务)
+ * - 主上游: Lucky API（QQ 音乐）
+ * - 兜底上游: 网易云音乐（Meting + v.iarc.top）
  */
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import crypto from 'crypto';
 
 // ============= 配置 =============
 const CONFIG = {
@@ -33,16 +34,12 @@ const UPSTREAMS = [
         type: 'lucky',
         url: process.env.LUCKY_API || 'https://cer.luckying.love/music/Lucky.php',
     },
-    // 兜底上游：本地 QQ 音乐服务
+    // 兜底上游：网易云音乐（Meting 搜索 + v.iarc.top 获取资源）
     {
-        name: 'qq-music-api-v2',
-        type: 'qqmusic',
-        url: process.env.QQMUSIC_FALLBACK || 'http://qq-music-api-v2:18200',
-        endpoints: {
-            search: '/api/search',
-            url: '/api/song/url',
-            lyric: '/api/lyric',
-        }
+        name: 'netease',
+        type: 'meting',
+        // v.iarc.top 内置 VIP Cookie，支持付费歌曲
+        url: process.env.METING_API || 'https://v.iarc.top',
     },
 ];
 
@@ -86,7 +83,7 @@ const BROWSER_BLACKLIST = [
 ];
 
 // ============= 服务健康自检 =============
-let cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', lastCheck: 0 };
+let cachedHealthStatus = { status: 'ok', text: '服务在线 · 运行正常', color: '#07C160', upstreams: [], lastCheck: 0 };
 const HEALTH_CHECK_INTERVAL = 60000;
 
 async function checkServiceHealth() {
@@ -95,41 +92,93 @@ async function checkServiceHealth() {
         return cachedHealthStatus;
     }
 
-    // 依次检查各上游
-    let anyOnline = false;
+    // 真实测试每个上游的歌曲搜索能力
+    const upstreamResults = [];
+
     for (const upstream of UPSTREAMS) {
+        const result = { name: upstream.name, type: upstream.type, status: 'offline', label: '离线' };
         try {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 5000);
+            const timeout = setTimeout(() => controller.abort(), 8000);
 
-            // 根据上游类型使用对应的检测端点
-            let checkUrl;
             if (upstream.type === 'lucky') {
-                checkUrl = `${upstream.url}?Love=test`;
+                // Lucky API：真实搜索一首歌，检查 music_url 是否为有效链接
+                const res = await fetch(`${upstream.url}?Love=test`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+                });
+                const data = await res.json();
+                clearTimeout(timeout);
+
+                if (data.code === 200 && data.music_url) {
+                    if (data.music_url.startsWith('http')) {
+                        result.status = 'online';
+                        result.label = '直连可用';
+                    } else {
+                        // 能搜索但链接不可用（付费歌曲）→ 混合模式
+                        result.status = 'hybrid';
+                        result.label = '混合模式';
+                    }
+                }
+            } else if (upstream.type === 'meting') {
+                // 网易云：测试 v.iarc.top 是否可以响应
+                const res = await fetch(`${upstream.url}/?server=netease&type=song&id=186016`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+                });
+                clearTimeout(timeout);
+                if (res.ok) {
+                    result.status = 'online';
+                    result.label = '在线';
+                }
             } else {
-                checkUrl = `${upstream.url}/api/search?keyword=test&num=1`;
-            }
-
-            const res = await fetch(checkUrl, {
-                signal: controller.signal,
-                headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
-            });
-            clearTimeout(timeout);
-
-            if (res.ok) {
-                anyOnline = true;
-                break;
+                const res = await fetch(`${upstream.url}/api/search?keyword=test&num=1`, {
+                    signal: controller.signal,
+                    headers: { 'User-Agent': 'HBMusic-HealthCheck/1.0' }
+                });
+                clearTimeout(timeout);
+                if (res.ok) {
+                    result.status = 'online';
+                    result.label = '在线';
+                }
             }
         } catch (e) {
-            // 继续尝试下一个上游
+            // 超时或网络错误，保持 offline
         }
+        upstreamResults.push(result);
     }
 
-    if (anyOnline) {
-        cachedHealthStatus = { status: 'ok', text: '服务在线 · A1', color: '#07C160', lastCheck: now };
+    // 判定总体状态和当前音源模式
+    const luckyStatus = upstreamResults.find(u => u.type === 'lucky');
+    const neteaseStatus = upstreamResults.find(u => u.type === 'meting');
+
+    let overallText, overallColor, overallStatus;
+
+    if (luckyStatus?.status === 'online') {
+        overallStatus = 'ok';
+        overallText = '服务在线 · QQ音乐';
+        overallColor = '#07C160';
+    } else if (luckyStatus?.status === 'hybrid' && neteaseStatus?.status === 'online') {
+        overallStatus = 'hybrid';
+        overallText = '服务在线 · 混合模式';
+        overallColor = '#07C160';
+    } else if (neteaseStatus?.status === 'online') {
+        overallStatus = 'fallback';
+        overallText = '服务在线 · 网易云';
+        overallColor = '#07C160';
     } else {
-        cachedHealthStatus = { status: 'error', text: '服务维护中 · B2', color: '#FF3B30', lastCheck: now };
+        overallStatus = 'error';
+        overallText = '服务维护中';
+        overallColor = '#FF3B30';
     }
+
+    cachedHealthStatus = {
+        status: overallStatus,
+        text: overallText,
+        color: overallColor,
+        upstreams: upstreamResults,
+        lastCheck: now,
+    };
 
     return cachedHealthStatus;
 }
@@ -424,6 +473,9 @@ async function searchAndGetSong(keyword, log) {
             if (upstream.type === 'lucky') {
                 // Lucky API：直接返回完整结果（含真实播放链接）
                 result = await searchFromLucky(upstream, keyword, controller.signal, log);
+            } else if (upstream.type === 'meting') {
+                // 网易云音乐：Meting 搜索 + v.iarc.top 获取播放链接
+                result = await searchFromMeting(upstream, keyword, controller.signal, log);
             } else if (upstream.type === 'kuwo') {
                 // 酷我 API：直接返回完整结果
                 result = await searchFromKuwo(upstream, keyword, controller.signal, log);
@@ -434,7 +486,68 @@ async function searchAndGetSong(keyword, log) {
             clearTimeout(timeout);
 
             if (result) {
-                const finalResult = { ...result, source: upstream.name };
+                // 品牌签名：歌手名后缀
+                const brandedSinger = `${result.singer} · hbmusic.1yo.cc`;
+
+                // 品牌签名：歌词（不破坏 LRC 元数据格式）
+                let brandedLyric = result.lyric;
+                if (brandedLyric && typeof brandedLyric === 'string') {
+                    // 1. 替换/插入 [by:] 元数据标签
+                    if (brandedLyric.includes('[by:')) {
+                        brandedLyric = brandedLyric.replace(/\[by:[^\]]*\]/, '[by:hbmusic.1yo.cc]');
+                    } else {
+                        // 在 [offset:] 或第一个时间戳行前插入
+                        brandedLyric = brandedLyric.replace(/(\[offset:[^\]]*\])/, '$1\n[by:hbmusic.1yo.cc]');
+                    }
+                    // 2. 在制作人信息（作词/作曲/编曲等）之后、正式歌词之前插入品牌行
+                    const lines = brandedLyric.split('\n');
+                    const creditKeywords = ['作词', '作曲', '编曲', '制作人', '合声', '混音', '母带', '录音', '吉他', '钢琴', '贝斯', '鼓', '弦乐'];
+                    let lastCreditIndex = -1;
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        // 跳过元数据行（[ti:], [ar:], [al:], [by:], [offset:] 等）
+                        if (/^\[(ti|ar|al|by|offset):/.test(line)) continue;
+                        // 检查是否为制作人信息行
+                        if (creditKeywords.some(kw => line.includes(kw))) {
+                            lastCreditIndex = i;
+                        }
+                    }
+
+                    // 找到插入位置：最后一条制作人信息之后
+                    const insertIndex = lastCreditIndex >= 0
+                        ? lastCreditIndex + 1
+                        : lines.findIndex(l => /^\[\d{2}:\d{2}/.test(l));  // 没有制作信息则找第一个时间戳行
+
+                    if (insertIndex >= 0) {
+                        // 取制作人信息最后一行的时间戳作为签名起始时间
+                        const lastCreditLine = lines[lastCreditIndex >= 0 ? lastCreditIndex : insertIndex] || '';
+                        const timeMatch = lastCreditLine.match(/^\[(\d{2}:\d{2}[.\d]*)\]/);
+                        const baseTime = timeMatch ? timeMatch[1] : '00:00.00';
+
+                        // 解析时间并加 1~2 秒
+                        const timeParts = baseTime.split(':');
+                        const minutes = parseInt(timeParts[0]);
+                        const seconds = parseFloat(timeParts[1]);
+                        const t1Sec = seconds + 1;
+                        const t2Sec = seconds + 2;
+                        const t1 = `${String(minutes).padStart(2, '0')}:${t1Sec.toFixed(2).padStart(5, '0')}`;
+                        const t2 = `${String(minutes).padStart(2, '0')}:${t2Sec.toFixed(2).padStart(5, '0')}`;
+
+                        lines.splice(insertIndex, 0,
+                            `[${t1}]🎵 浏览器输入 hbmusic.1yo.cc`,
+                            `[${t2}]🎵 即可免费享受全网点歌服务`
+                        );
+                        brandedLyric = lines.join('\n');
+                    }
+                }
+
+                const finalResult = {
+                    ...result,
+                    singer: brandedSinger,
+                    lyric: brandedLyric,
+                    source: upstream.name,
+                };
                 log.info({ title: result.title, source: upstream.name }, '搜索成功');
                 // 写入缓存
                 setCache(keyword, finalResult);
@@ -479,6 +592,7 @@ async function searchFromQQMusic(upstream, keyword, signal, log) {
 }
 
 // Lucky API 适配器 - 直接返回真实播放链接
+// 混合模式：付费歌曲时，先网易云确认 ID + 播放链接，再用精确歌名去 Lucky 获取歌词
 async function searchFromLucky(upstream, keyword, signal, log) {
     const searchUrl = `${upstream.url}?Love=${encodeURIComponent(keyword)}`;
     const searchRes = await fetch(searchUrl, {
@@ -491,32 +605,152 @@ async function searchFromLucky(upstream, keyword, signal, log) {
         return null;
     }
 
-    // 从歌词中解析真实歌名和歌手（歌词格式：[ti:歌名] [ar:歌手]）
-    let title = keyword;
-    let singer = '未知歌手';
-    let cleanLyric = '';
-    if (data.lyric) {
-        const titleMatch = data.lyric.match(/\[ti:([^\]]+)\]/);
-        const artistMatch = data.lyric.match(/\[ar:([^\]]+)\]/);
-        if (titleMatch) title = titleMatch[1];
-        if (artistMatch) singer = artistMatch[1];
+    // music_url 是有效播放链接 → 正常返回（无需混合模式）
+    if (data.music_url.startsWith('http')) {
+        let title = keyword;
+        let singer = '未知歌手';
+        let cleanLyric = '';
+        if (data.lyric) {
+            const titleMatch = data.lyric.match(/\[ti:([^\]]+)\]/);
+            const artistMatch = data.lyric.match(/\[ar:([^\]]+)\]/);
+            if (titleMatch) title = titleMatch[1];
+            if (artistMatch) singer = artistMatch[1];
+            cleanLyric = data.lyric
+                .split('\n')
+                .filter(line => !line.includes('Lucky签') && !line.includes('cer.luckying.love') && !line.includes('点歌接口'))
+                .join('\n');
+        }
+        return {
+            code: 200,
+            title,
+            singer,
+            cover: data.cover || '',
+            link: data.link || '',
+            music_url: data.music_url,
+            lyric: cleanLyric,
+        };
+    }
 
-        // 过滤歌词中的广告行（包含 Lucky签、cer.luckying.love、点歌接口 等关键词）
-        cleanLyric = data.lyric
-            .split('\n')
-            .filter(line => !line.includes('Lucky签') && !line.includes('cer.luckying.love') && !line.includes('点歌接口'))
-            .join('\n');
+    // ============= 混合模式 =============
+    // 第一步：网易云搜索 → 确认歌曲 ID + 精确歌名歌手
+    log.info({ keyword, msg: data.music_url.substring(0, 40) }, '付费歌曲，启用混合模式');
+
+    const metingUpstream = UPSTREAMS.find(u => u.type === 'meting');
+    if (!metingUpstream) return null;
+
+    const neteaseResult = await searchNeteaseInfo(keyword, signal, log);
+    if (!neteaseResult) {
+        log.warn({ keyword }, '混合模式：网易云搜索无结果');
+        return null;
+    }
+
+    const { songId, title: neteaseTitle, singer: neteaseSinger, albumName, picId } = neteaseResult;
+    const musicUrl = `${metingUpstream.url}/?server=netease&type=url&id=${songId}`;
+
+    log.info({ songId, neteaseTitle, neteaseSinger }, '混合模式：网易云歌曲确认');
+
+    // 第二步：用网易云的精确歌名去 Lucky 获取歌词
+    let lyric = '';
+    let cover = data.cover || '';
+    try {
+        const luckyLyricUrl = `${upstream.url}?Love=${encodeURIComponent(neteaseTitle)}`;
+        const luckyRes = await fetch(luckyLyricUrl, {
+            signal,
+            headers: { 'User-Agent': 'HBMusic/1.0' }
+        });
+        const luckyData = await luckyRes.json();
+
+        if (luckyData.code === 200 && luckyData.lyric) {
+            lyric = luckyData.lyric
+                .split('\n')
+                .filter(line => !line.includes('Lucky签') && !line.includes('cer.luckying.love') && !line.includes('点歌接口'))
+                .join('\n');
+            if (luckyData.cover) cover = luckyData.cover;
+            log.info({ neteaseTitle }, '混合模式：Lucky 歌词获取成功');
+        }
+    } catch (e) {
+        log.warn({ error: e.message }, '混合模式：Lucky 歌词获取失败');
+    }
+
+    // 第三步：如果 Lucky 歌词也没有，用网易云歌词兜底
+    if (!lyric) {
+        try {
+            const lrcRes = await fetch(`${metingUpstream.url}/?server=netease&type=lrc&id=${songId}`, {
+                signal,
+                headers: { 'User-Agent': 'HBMusic/1.0' },
+            });
+            lyric = await lrcRes.text();
+            // 补充 LRC 元数据头
+            if (lyric && !lyric.includes('[ti:')) {
+                lyric = `[ti:${neteaseTitle}]\n[ar:${neteaseSinger}]\n[al:${albumName}]\n[by:hbmusic.1yo.cc]\n[offset:0]\n` + lyric;
+            }
+            log.info({ songId }, '混合模式：使用网易云歌词兜底');
+        } catch (e) {
+            log.warn({ error: e.message }, '混合模式：网易云歌词也获取失败');
+        }
+    }
+
+    // 封面：优先 Lucky，其次网易云
+    if (!cover && picId) {
+        cover = `${metingUpstream.url}/?server=netease&type=pic&id=${picId}`;
     }
 
     return {
         code: 200,
-        title,
-        singer,
-        cover: data.cover || '',
-        link: data.link || '',
-        music_url: data.music_url,  // 直接使用真实链接，无需代理
-        lyric: cleanLyric,
+        title: neteaseTitle,
+        singer: neteaseSinger,
+        cover,
+        link: `https://music.163.com/song?id=${songId}`,
+        music_url: musicUrl,
+        lyric: lyric || '',
     };
+}
+
+// 通过网易云 EAPI 搜索歌曲，返回完整歌曲信息
+async function searchNeteaseInfo(keyword, signal, log) {
+    try {
+        const searchBody = {
+            s: keyword,
+            type: 1,
+            limit: 5,
+            total: 'true',
+            offset: 0,
+        };
+
+        const encrypted = neteaseEapiEncrypt('http://music.163.com/api/cloudsearch/pc', searchBody);
+        const searchParams = new URLSearchParams({ params: encrypted.params });
+
+        const searchRes = await fetch(encrypted.url, {
+            method: 'POST',
+            signal,
+            headers: getNeteaseHeaders(),
+            body: searchParams.toString(),
+        });
+
+        const searchData = await searchRes.json();
+        const songs = searchData?.result?.songs;
+
+        if (!songs || songs.length === 0) {
+            return null;
+        }
+
+        // 优先匹配歌名完全一致的
+        const exactMatch = songs.find(s => s.name === keyword.split(' ')[0]);
+        const song = exactMatch || songs[0];
+
+        log.info({ songId: song.id, title: song.name }, '网易云歌曲匹配');
+
+        return {
+            songId: song.id,
+            title: song.name,
+            singer: song.ar?.map(a => a.name).join('/') || '未知歌手',
+            albumName: song.al?.name || '',
+            picId: song.al?.pic_str || song.al?.pic || '',
+        };
+    } catch (e) {
+        log.warn({ error: e.message }, '网易云搜索失败');
+        return null;
+    }
 }
 
 // 酷我 API 适配器（暂时禁用）
@@ -542,6 +776,136 @@ async function searchFromKuwo(upstream, keyword, signal, log) {
         link: `https://www.kuwo.cn/play_detail/${song.rid}`,
         music_url: `${CONFIG.BASE_URL}/fallback-stream?rid=${song.rid}`,
         lyric: `${CONFIG.BASE_URL}/fallback-lyric?rid=${song.rid}`,
+    };
+}
+
+// ============= 网易云音乐（Meting）适配器 =============
+// 搜索：直连网易云 cloudsearch API（EAPI 加密）
+// 播放链接/歌词：通过 v.iarc.top（内置 VIP Cookie）
+
+const EAPI_KEY = 'e82ckenh8dichen8';
+
+// 网易云 EAPI 加密
+function neteaseEapiEncrypt(url, body) {
+    const text = JSON.stringify(body);
+    const path = url.replace(/https?:\/\/[^\/]+/, '');
+
+    const message = `nobody${path}use${text}md5forencrypt`;
+    const digest = crypto.createHash('md5').update(message).digest('hex');
+    const data = `${path}-36cd479b6b5-${text}-36cd479b6b5-${digest}`;
+
+    const cipher = crypto.createCipheriv('aes-128-ecb', Buffer.from(EAPI_KEY, 'utf8'), null);
+    cipher.setAutoPadding(true);
+    let encrypted = cipher.update(data, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+
+    return {
+        url: url.replace('/api/', '/eapi/'),
+        params: encrypted.toUpperCase(),
+    };
+}
+
+// 生成网易云请求头
+function getNeteaseHeaders() {
+    const deviceId = crypto.randomBytes(16).toString('hex').toUpperCase();
+    const timestamp = Date.now().toString();
+    return {
+        'Referer': 'music.163.com',
+        'Cookie': `osver=android; appver=8.7.01; os=android; deviceId=${deviceId}; channel=netease; requestId=${timestamp}_${Math.floor(Math.random() * 1000).toString().padStart(4, '0')}`,
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 11) NeteaseMusic/8.7.01',
+        'Content-Type': 'application/x-www-form-urlencoded',
+    };
+}
+
+async function searchFromMeting(upstream, keyword, signal, log) {
+    // 第一步：通过网易云 cloudsearch API 搜索歌名
+    log.info({ keyword, source: 'netease' }, '尝试网易云搜索...');
+
+    const searchBody = {
+        s: keyword,
+        type: 1,
+        limit: 5,
+        total: 'true',
+        offset: 0,
+    };
+
+    const encrypted = neteaseEapiEncrypt('http://music.163.com/api/cloudsearch/pc', searchBody);
+    const searchParams = new URLSearchParams({ params: encrypted.params });
+
+    const searchRes = await fetch(encrypted.url, {
+        method: 'POST',
+        signal,
+        headers: getNeteaseHeaders(),
+        body: searchParams.toString(),
+    });
+
+    const searchData = await searchRes.json();
+    const songs = searchData?.result?.songs;
+
+    if (!songs || songs.length === 0) {
+        log.warn({ keyword }, '网易云搜索无结果');
+        return null;
+    }
+
+    // 从搜索结果中取第一首歌
+    const song = songs[0];
+    const songId = song.id;
+    const title = song.name || keyword;
+    const singer = song.ar?.map(a => a.name).join('/') || '未知歌手';
+    const albumName = song.al?.name || '';
+    const picId = song.al?.pic_str || song.al?.pic || '';
+
+    log.info({ songId, title, singer }, '网易云搜索命中');
+
+    // 第二步：构造 v.iarc.top 播放链接（直接返回音频流，无需解析 JSON）
+    const musicUrl = `${upstream.url}/?server=netease&type=url&id=${songId}`;
+
+    // 验证播放链接是否可用
+    try {
+        const headRes = await fetch(musicUrl, {
+            method: 'HEAD',
+            signal,
+            headers: { 'User-Agent': 'HBMusic/1.0' },
+        });
+        if (!headRes.ok) {
+            log.warn({ songId, status: headRes.status }, '网易云播放链接不可用');
+            return null;
+        }
+        log.info({ songId }, '网易云播放链接验证通过');
+    } catch (e) {
+        log.warn({ songId, error: e.message }, '网易云播放链接验证失败');
+        return null;
+    }
+
+    // 第三步：通过 v.iarc.top 获取歌词（直接返回 LRC 文本）
+    let lyric = '';
+    try {
+        const lrcRes = await fetch(`${upstream.url}/?server=netease&type=lrc&id=${songId}`, {
+            signal,
+            headers: { 'User-Agent': 'HBMusic/1.0' },
+        });
+        lyric = await lrcRes.text();
+    } catch (e) {
+        log.warn({ songId, error: e.message }, '网易云歌词获取失败');
+    }
+
+    // 第四步：封面（直接用 v.iarc.top 的图片链接）
+    const cover = picId ? `${upstream.url}/?server=netease&type=pic&id=${picId}` : '';
+
+    // 为歌词补充标准 LRC 元数据头（网易云返回的歌词缺少这些标签）
+    if (lyric && !lyric.includes('[ti:')) {
+        const lrcHeader = `[ti:${title}]\n[ar:${singer}]\n[al:${albumName}]\n[by:hbmusic.1yo.cc]\n[offset:0]\n`;
+        lyric = lrcHeader + lyric;
+    }
+
+    return {
+        code: 200,
+        title,
+        singer,
+        cover,
+        link: `https://music.163.com/song?id=${songId}`,
+        music_url: musicUrl,
+        lyric: lyric || '',
     };
 }
 
@@ -654,7 +1018,10 @@ function getStatusPageHTML(health) {
         .feature-icon { margin-right: 12px; font-size: 18px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1)); transition: transform 0.2s; }
         .feature-item:hover .feature-icon { transform: scale(1.2) rotate(10deg); }
         .status-box { border-top: 1px solid rgba(0,0,0,0.05); pt: 24px; margin-top: 12px; }
-        .status-badge { display: inline-flex; align-items: center; background: rgba(var(--status-rgb), 0.1); color: var(--status-color); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid rgba(var(--status-rgb), 0.15); }
+        .status-badge { display: inline-flex; align-items: center; background: rgba(var(--status-rgb), 0.1); color: var(--status-color); padding: 6px 16px; border-radius: 24px; font-size: 13px; font-weight: 600; margin-bottom: 12px; border: 1px solid rgba(var(--status-rgb), 0.15); }
+        .upstream-status { display: flex; gap: 12px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .upstream-item { display: inline-flex; align-items: center; font-size: 12px; color: #666; background: rgba(0,0,0,0.03); padding: 4px 10px; border-radius: 16px; }
+        .upstream-dot { width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; flex-shrink: 0; }
         .status-dot { width: 8px; height: 8px; background: var(--status-color); border-radius: 50%; margin-right: 8px; position: relative; }
         .status-dot::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: var(--status-color); border-radius: 50%; opacity: 0.4; animation: dotGlow 2s infinite; }
         @keyframes dotGlow { 0% { transform: scale(1); opacity: 0.4; } 100% { transform: scale(2.5); opacity: 0; } }
